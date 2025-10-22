@@ -1,4 +1,4 @@
 // src/network/mod.rs
-pub mod connman;
-
-pub use connman::ConnectionManager;
+// Temporarily disabled until we implement node and message modules
+// pub mod connman;
+// pub use connman::ConnectionManager;

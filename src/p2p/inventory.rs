@@ -1,5 +1,5 @@
 use bitcoin::{BlockHash, Txid};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 

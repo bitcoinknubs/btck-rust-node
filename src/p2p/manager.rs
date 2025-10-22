@@ -1,7 +1,7 @@
 use super::inventory::{InventoryManager, InvId};
-use super::peer::{Peer, PeerState};
+use super::peer::Peer;
 use anyhow::Result;
-use bitcoin::{Block, BlockHash, Network, Transaction, Txid};
+use bitcoin::{BlockHash, Network, Txid};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

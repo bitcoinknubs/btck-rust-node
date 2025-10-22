@@ -121,7 +121,7 @@ pub struct PeerInfo {
 pub async fn getpeerinfo(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let peers = state.connman.get_peer_info();
+    let peers = state.connman.get_peer_info().await;
     Ok(Json(json!(peers)))
 }
 
@@ -224,8 +224,8 @@ pub async fn getaddednodeinfo(
     State(state): State<AppState>,
     Json(params): Json<GetAddedNodeInfoParams>,
 ) -> Result<Json<Value>, StatusCode> {
-    let added_nodes = state.connman.get_added_nodes();
-    
+    let added_nodes = state.connman.get_added_nodes().await;
+
     let result: Vec<AddedNodeInfo> = if let Some(node) = params.node {
         added_nodes.into_iter()
             .filter(|n| n.addednode == node)
@@ -259,7 +259,7 @@ pub struct UploadTarget {
 pub async fn getnettotals(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let (bytes_recv, bytes_sent) = state.connman.get_net_totals();
+    let (bytes_recv, bytes_sent) = state.connman.get_net_totals().await;
     
     let totals = NetTotals {
         totalbytesrecv: bytes_recv,
@@ -282,7 +282,7 @@ pub async fn getnettotals(
 pub async fn getnetworkactive(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let active = state.connman.is_network_active();
+    let active = state.connman.is_network_active().await;
     Ok(Json(json!({ "result": active })))
 }
 
@@ -312,7 +312,7 @@ pub struct BannedNode {
 pub async fn listbanned(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let banned = state.connman.get_banned_list();
+    let banned = state.connman.get_banned_list().await;
     Ok(Json(json!(banned)))
 }
 

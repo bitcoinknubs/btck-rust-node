@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use bitcoin::Network;
 use bitcoin::p2p::{message, Magic, ServiceFlags};
 use std::net::SocketAddr;

@@ -1,4 +1,4 @@
-use bitcoin::{Block, BlockHash, Transaction, Txid};
+use bitcoin::{Block, BlockHash, Transaction};
 use bitcoin::p2p::message_blockdata::Inventory;
 
 /// Inventory type for P2P messages
@@ -96,7 +96,7 @@ pub enum P2PMessage {
     GetAddr,
 
     /// Addresses
-    Addr(Vec<(u32, bitcoin::network::Address)>),
+    Addr(Vec<(u32, bitcoin::p2p::Address)>),
 
     /// Send headers preference
     SendHeaders,

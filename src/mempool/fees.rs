@@ -2,8 +2,6 @@ use super::entry::FeeRate;
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
 
-pub use super::entry::FeeRate as FeeRateExport;
-
 /// Priority level for fee estimation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeePriority {

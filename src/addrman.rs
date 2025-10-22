@@ -1,7 +1,7 @@
 use bitcoin::Network;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 use parking_lot::RwLock;
 
@@ -373,10 +373,10 @@ impl AddressManager {
         let mut rng = rand::thread_rng();
         let mut threshold = rng.gen::<f64>() * total_weight;
 
-        for (addr, info) in candidates {
+        for (addr, info) in &candidates {
             threshold -= info.get_chance();
             if threshold <= 0.0 {
-                return Some(*addr);
+                return Some(**addr);
             }
         }
 
