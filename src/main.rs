@@ -12,11 +12,14 @@ use std::{
 
 mod addrman; // Address manager
 mod ffi;     // bindgen이 생성한 btck_* FFI
+mod kernel;  // Kernel wrapper
 mod mempool; // Mempool 구현
-mod network; // Network 구현
+// mod network; // Network 구현 (temporarily disabled)
 mod p2p;     // P2P 구현
 mod rpc;     // RPC 서버
 mod seeds;   // DNS seeds
+
+use kernel::Kernel;
 
 // 체인 타입 상수 (bitcoinkernel.h와 일치)
 const CHAIN_MAIN: u8 = 0;

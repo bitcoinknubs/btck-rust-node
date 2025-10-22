@@ -1,7 +1,7 @@
 use bitcoin::{Transaction, Txid};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 /// Fee rate in satoshis per virtual byte
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,7 +87,7 @@ impl MempoolEntry {
         fee: u64,
         height: u32,
     ) -> Self {
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
         let vsize = tx.vsize() as u64;
         let fee_rate = FeeRate::from_sat_per_vb(fee / vsize.max(1));
         let signals_replacement = Self::check_rbf_signaling(&tx);

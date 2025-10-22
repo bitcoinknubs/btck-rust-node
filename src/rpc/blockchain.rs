@@ -8,10 +8,8 @@ use std::sync::Arc;
 
 use crate::kernel::Kernel;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub kernel: Arc<Kernel>,
-}
+// Import AppState from mod.rs instead of defining it here
+use super::AppState;
 
 // ============================================================================
 // Blockchain RPC Methods

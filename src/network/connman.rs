@@ -6,10 +6,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::net::TcpStream;
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
-use super::node::{Node, NodeId};
-use super::message::NetworkMessage;
+// Temporarily comment out until we implement these modules
+// use super::node::{Node, NodeId};
+// use super::message::NetworkMessage;
 
 /// Connection Manager - handles all peer connections
 pub struct ConnectionManager {

@@ -1,12 +1,11 @@
-use super::entry::{FeeRate, MempoolEntry};
+use super::entry::MempoolEntry;
 use super::fees::FeeEstimator;
 use super::policy::MempoolPolicy;
 use anyhow::{anyhow, Result};
 use bitcoin::{Transaction, Txid};
 use dashmap::DashMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use parking_lot::RwLock;
 
 /// Main mempool structure
@@ -48,7 +47,7 @@ impl Mempool {
 
     /// Add a transaction to the mempool
     pub fn add_tx(&self, tx: Transaction, fee: u64, height: u32) -> Result<Txid> {
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
 
         // Check if already in mempool
         if self.entries.contains_key(&txid) {
@@ -91,7 +90,7 @@ impl Mempool {
         self.policy.check_ancestor_limits(
             ancestor_count + 1,
             ancestor_size + entry.vsize,
-        )?;
+        ).map_err(|e| anyhow!(e))?;
 
         // Create and insert entry
         let mut entry = entry;
@@ -398,7 +397,7 @@ impl Mempool {
             new_entry.signals_replacement,
             fee_delta,
             size_delta,
-        )?;
+        ).map_err(|e| anyhow!(e))?;
 
         // Remove conflicts
         for conflict_txid in conflicts {
