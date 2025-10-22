@@ -115,19 +115,20 @@ test-util = []
 name = "btck-rust-node"
 path = "src/main.rs"
 
-[[bench]]
-name = "network_bench"
-harness = false
+# Benchmarks temporarily disabled
+# [[bench]]
+# name = "network_bench"
+# harness = false
 
-[[bench]]
-name = "mempool_bench"
-harness = false
+# [[bench]]
+# name = "mempool_bench"
+# harness = false
 
-# Examples
-[[example]]
-name = "simple_node"
-path = "examples/simple_node.rs"
+# Examples temporarily disabled
+# [[example]]
+# name = "simple_node"
+# path = "examples/simple_node.rs"
 
-[[example]]
-name = "rpc_client"
-path = "examples/rpc_client.rs"
+# [[example]]
+# name = "rpc_client"
+# path = "examples/rpc_client.rs"
