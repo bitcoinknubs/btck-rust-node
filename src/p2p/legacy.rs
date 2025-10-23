@@ -362,14 +362,24 @@ impl PeerManager {
     async fn request_headers(&mut self, to: SocketAddr) -> Result<()> {
         if !self.peers.contains_key(&to) { return Ok(()); }
         self.last_locator = self.build_locator();
+
+        eprintln!("[p2p] >>> Requesting headers from {to}");
+        eprintln!("[p2p]     Locator has {} hashes:", self.last_locator.len());
+        for (i, hash) in self.last_locator.iter().take(5).enumerate() {
+            eprintln!("[p2p]       [{i}] {hash}");
+        }
+        if self.last_locator.len() > 5 {
+            eprintln!("[p2p]       ... and {} more", self.last_locator.len() - 5);
+        }
+
         let gh = msg_blk::GetHeadersMessage {
             version: ADVERTISED_PROTO,
             locator_hashes: self.last_locator.clone(),
             stop_hash: BlockHash::from_raw_hash(sha256d::Hash::all_zeros()),
         };
         if let Some(p) = self.peers.get_mut(&to) {
-            eprintln!("[p2p] send GetHeaders ({} locators)", gh.locator_hashes.len());
             p.send(message::NetworkMessage::GetHeaders(gh)).await?;
+            eprintln!("[p2p]     GetHeaders message sent successfully");
         }
         Ok(())
     }
@@ -447,9 +457,15 @@ impl PeerManager {
                 };
 
                 if let Some(msg) = maybe {
+                    // Debug: log all received messages
+                    let cmd = msg.command();
+                    if cmd != "ping" && cmd != "pong" {
+                        eprintln!("[p2p] recv from {addr}: {}", cmd);
+                    }
+
                     match msg {
                         message::NetworkMessage::Headers(h) => {
-                            eprintln!("[p2p] headers: {}", h.len());
+                            eprintln!("[p2p] *** RECEIVED HEADERS: {} from {addr} ***", h.len());
                             if !h.is_empty() {
                                 last_headers_ts = tokio::time::Instant::now();
 
