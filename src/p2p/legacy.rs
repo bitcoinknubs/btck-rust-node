@@ -252,6 +252,7 @@ pub struct PeerManager {
     peer_heights: HashMap<SocketAddr, i32>,     // 각 피어의 start_height
     best_known_height: i32,                     // 네트워크의 최고 높이
     header_chain_height: i32,                   // 현재 헤더 체인의 높이
+    sync_peer: Option<SocketAddr>,              // Bitcoin Core: ONE headers sync peer
 
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
     on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
@@ -285,6 +286,7 @@ impl PeerManager {
             peer_heights: HashMap::new(),
             best_known_height: 0,
             header_chain_height: 0,
+            sync_peer: None,
             on_block: None,
             on_tx: None,
         }
@@ -324,8 +326,11 @@ impl PeerManager {
 
         self.peers.insert(addr, p);
 
-        // Headers-First: 헤더 동기화 중이면 헤더만 요청
-        if !self.headers_synced {
+        // Bitcoin Core 방식: ONE sync peer만 선택
+        // Headers-First: 첫 번째 피어를 sync peer로 선택
+        if !self.headers_synced && self.sync_peer.is_none() {
+            self.sync_peer = Some(addr);
+            eprintln!("[p2p] ⭐ Selected {} as HEADERS SYNC PEER", addr);
             self.request_headers(addr).await?;
         }
         Ok(())
@@ -509,25 +514,25 @@ impl PeerManager {
         loop {
             // 피어 없으면 재부트스트랩
             if self.peers.is_empty() {
+                self.sync_peer = None;  // Reset sync peer
                 let _ = self.bootstrap().await?;
                 if self.peers.is_empty() {
                     sleep(Duration::from_millis(200)).await;
                     continue;
                 }
-                if let Some(&addr) = self.peers.keys().next() {
-                    let _ = self.request_headers(addr).await;
-                }
+                // sync_peer는 add_outbound에서 자동으로 설정됨
             }
 
             // 타임아웃된 블록 재할당
             for h in self.downloader.reassign_timeouts() { self.downloader.push_many([h]); }
 
             // 모든 피어를 라운드로빈 폴링
-            // IBD 중에는 더 긴 타임아웃 사용 (Headers 메시지는 큼)
+            // IBD 중에는 더 긴 타임아웃 사용 (Headers 메시지는 클 수 있음)
+            // Bitcoin Core: 첫 GetHeaders 응답은 최대 2000 headers (160KB)
             let recv_timeout = if self.headers_synced {
                 Duration::from_millis(100)
             } else {
-                Duration::from_millis(500)  // Headers sync 중에는 더 길게
+                Duration::from_secs(2)  // Headers sync 중: 2초 (큰 메시지 대기)
             };
 
             let addrs: Vec<SocketAddr> = self.peers.keys().copied().collect();
@@ -718,20 +723,23 @@ impl PeerManager {
                 }
             }
 
-            // 주기적 헤더 재요청(5초)
-            if tokio::time::Instant::now().duration_since(last_headers_ts) > Duration::from_secs(REREQ_SECS) {
-                if let Some(&addr) = self.peers.keys().next() {
-                    eprintln!("[p2p] re-request headers to {addr}");
-                    let _ = self.request_headers(addr).await;
-                    last_headers_ts = tokio::time::Instant::now();
+            // 주기적 헤더 재요청(5초) - Bitcoin Core: sync peer에게만
+            if !self.headers_synced && tokio::time::Instant::now().duration_since(last_headers_ts) > Duration::from_secs(REREQ_SECS) {
+                if let Some(sync_addr) = self.sync_peer {
+                    if self.peers.contains_key(&sync_addr) {
+                        eprintln!("[p2p] re-request headers to sync peer {}", sync_addr);
+                        let _ = self.request_headers(sync_addr).await;
+                        last_headers_ts = tokio::time::Instant::now();
+                    }
                 }
             }
 
-            // 오래 정체되면 피어 교체
-            if tokio::time::Instant::now().duration_since(last_headers_ts) > STALL_LIMIT {
-                if let Some(&addr) = self.peers.keys().next() {
-                    eprintln!("[p2p] headers stall; replacing peer {}", addr);
-                    self.peers.remove(&addr);
+            // 오래 정체되면 sync peer 교체
+            if !self.headers_synced && tokio::time::Instant::now().duration_since(last_headers_ts) > STALL_LIMIT {
+                if let Some(sync_addr) = self.sync_peer {
+                    eprintln!("[p2p] headers stall; replacing sync peer {}", sync_addr);
+                    self.peers.remove(&sync_addr);
+                    self.sync_peer = None;
                 }
                 let _ = self.bootstrap().await;
             }
