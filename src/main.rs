@@ -16,6 +16,7 @@ mod rpc;     // RPC 서버
 mod seeds;   // DNS seeds
 
 use kernel::Kernel;
+use mempool::{Mempool, MempoolPolicy};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "btck-mini-node", version, about = "Mini node powered by libbitcoinkernel")]
@@ -55,6 +56,15 @@ async fn main() -> Result<()> {
     // 커널 초기화
     let kernel = Arc::new(Kernel::new(&args.chain, &args.datadir, &args.blocksdir)?);
 
+    // Mempool 초기화
+    let policy = match args.chain.as_str() {
+        "main" | "mainnet" => MempoolPolicy::mainnet(),
+        "testnet" | "signet" => MempoolPolicy::testnet(),
+        _ => MempoolPolicy::regtest(),
+    };
+    let mempool = Arc::new(Mempool::with_kernel(policy, kernel.clone()));
+    eprintln!("[mempool] initialized with policy: {}", args.chain);
+
     // (옵션) 블록 임포트
     if let Some(list) = &args.import {
         let files: Vec<String> = list
@@ -82,6 +92,7 @@ async fn main() -> Result<()> {
 
         let peers_cli = args.peer.clone();
         let k = kernel.clone();
+        let m = mempool.clone();
 
         tokio::spawn(async move {
             // 블록 처리 콜백: libbitcoinkernel 검증/적용
@@ -89,8 +100,29 @@ async fn main() -> Result<()> {
                 k.process_block(raw)
             };
 
+            // 트랜잭션 처리 콜백: Mempool에 추가
+            let process_tx = move |tx: &bitcoin::Transaction| -> anyhow::Result<()> {
+                // Get current height (default to 0 if unavailable)
+                let height = 0u32; // TODO: get actual height from kernel
+
+                // Estimate fee (for now use dummy value, should calculate from inputs/outputs)
+                let fee = 1000u64; // TODO: calculate actual fee
+
+                match m.add_tx(tx.clone(), fee, height) {
+                    Ok(txid) => {
+                        eprintln!("[mempool] accepted tx: {}", txid);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("[mempool] rejected tx {}: {}", tx.compute_txid(), e);
+                        Err(e)
+                    }
+                }
+            };
+
             let mut pm = p2p::PeerManager::new(net, "/btck-mini-node:0.1/")
-                .with_block_processor(process_block);
+                .with_block_processor(process_block)
+                .with_tx_processor(process_tx);
 
             for p in peers_cli {
                 if let Ok(addr) = p.parse::<SocketAddr>() {
@@ -109,7 +141,7 @@ async fn main() -> Result<()> {
 
     // RPC 서버 시작
     let rpc_addr: SocketAddr = args.rpc.parse().context("bad --rpc addr")?;
-    rpc::start_rpc_server(rpc_addr, kernel).await?;
+    rpc::start_rpc_server(rpc_addr, kernel, mempool).await?;
 
     Ok(())
 }

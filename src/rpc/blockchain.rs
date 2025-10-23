@@ -300,15 +300,16 @@ pub struct MempoolInfo {
 pub async fn getmempoolinfo(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
-    // TODO: Implement with actual mempool
+    let stats = state.mempool.get_stats();
+
     let info = MempoolInfo {
         loaded: true,
-        size: 0,
-        bytes: 0,
-        usage: 0,
-        maxmempool: 300_000_000,
-        mempoolminfee: 0.00001,
-        minrelaytxfee: 0.00001,
+        size: stats.size,
+        bytes: stats.bytes,
+        usage: stats.usage,
+        maxmempool: stats.max_mempool,
+        mempoolminfee: stats.mempool_min_fee,
+        minrelaytxfee: stats.min_relay_tx_fee,
     };
 
     Ok(Json(json!(info)))
@@ -325,11 +326,25 @@ pub async fn getrawmempool(
     State(state): State<AppState>,
     Json(params): Json<GetRawMempoolParams>,
 ) -> Result<Json<Value>, StatusCode> {
-    // TODO: Implement with actual mempool
+    let txids = state.mempool.get_all_txids();
+
     if params.verbose {
-        Ok(Json(json!({})))
+        // TODO: Return detailed info for each transaction
+        let mut detailed = serde_json::Map::new();
+        for txid in txids {
+            detailed.insert(
+                txid.to_string(),
+                json!({
+                    "vsize": 0,
+                    "fee": 0.0,
+                    "time": 0,
+                })
+            );
+        }
+        Ok(Json(json!(detailed)))
     } else {
-        Ok(Json(json!([])))
+        let txid_strings: Vec<String> = txids.iter().map(|t| t.to_string()).collect();
+        Ok(Json(json!(txid_strings)))
     }
 }
 

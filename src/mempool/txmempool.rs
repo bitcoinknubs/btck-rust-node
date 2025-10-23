@@ -7,6 +7,7 @@ use dashmap::DashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use parking_lot::RwLock;
+use crate::kernel::Kernel;
 
 /// Main mempool structure
 pub struct Mempool {
@@ -30,6 +31,9 @@ pub struct Mempool {
 
     /// Map from outpoint to spending transaction
     spends: DashMap<bitcoin::OutPoint, Txid>,
+
+    /// Kernel for consensus validation
+    kernel: Option<Arc<Kernel>>,
 }
 
 impl Mempool {
@@ -42,6 +46,26 @@ impl Mempool {
             total_fees: Arc::new(RwLock::new(0)),
             current_height: Arc::new(RwLock::new(0)),
             spends: DashMap::new(),
+            kernel: None,
+        }
+    }
+
+    /// Set kernel for consensus validation
+    pub fn set_kernel(&mut self, kernel: Arc<Kernel>) {
+        self.kernel = Some(kernel);
+    }
+
+    /// Create mempool with kernel
+    pub fn with_kernel(policy: MempoolPolicy, kernel: Arc<Kernel>) -> Self {
+        Self {
+            entries: DashMap::new(),
+            policy: Arc::new(policy),
+            fee_estimator: Arc::new(RwLock::new(FeeEstimator::new())),
+            total_size: Arc::new(RwLock::new(0)),
+            total_fees: Arc::new(RwLock::new(0)),
+            current_height: Arc::new(RwLock::new(0)),
+            spends: DashMap::new(),
+            kernel: Some(kernel),
         }
     }
 
@@ -52,6 +76,37 @@ impl Mempool {
         // Check if already in mempool
         if self.entries.contains_key(&txid) {
             return Err(anyhow!("transaction already in mempool"));
+        }
+
+        // Validate with Kernel if available
+        if let Some(ref kernel) = self.kernel {
+            match kernel.validate_transaction(&tx) {
+                Ok((false, Some(reason))) => {
+                    return Err(anyhow!("transaction invalid: {}", reason));
+                }
+                Ok((false, None)) => {
+                    return Err(anyhow!("transaction invalid"));
+                }
+                Err(e) => {
+                    return Err(anyhow!("validation error: {}", e));
+                }
+                Ok((true, _)) => {
+                    // Valid, continue
+                }
+            }
+
+            // Check UTXO availability
+            match kernel.check_tx_inputs(&tx) {
+                Ok((false, missing)) => {
+                    return Err(anyhow!("missing inputs: {} unavailable", missing));
+                }
+                Err(e) => {
+                    return Err(anyhow!("input check error: {}", e));
+                }
+                Ok((true, _)) => {
+                    // Inputs available, continue
+                }
+            }
         }
 
         // Check basic policy
