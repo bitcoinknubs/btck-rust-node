@@ -1,5 +1,6 @@
 use crate::ffi;
 use anyhow::Result;
+use bitcoin::hashes::Hash;
 use bitcoin::BlockHash;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
@@ -134,7 +135,7 @@ impl Kernel {
         self.active_height()
     }
 
-    pub fn get_best_block_hash(&self) -> Result<bitcoin::BlockHash> {
+    pub fn get_best_block_hash(&self) -> Result<BlockHash> {
         unsafe {
             let chain = ffi::btck_chainstate_manager_get_active_chain(self.chainman);
             if chain.is_null() {
@@ -146,30 +147,39 @@ impl Kernel {
                 anyhow::bail!("no chain tip");
             }
 
-            // Get block hash from tip
-            let mut hash_bytes = [0u8; 32];
-            ffi::btck_block_index_get_block_hash(tip, hash_bytes.as_mut_ptr());
+            // Get block hash from tip (returns *const btck_BlockHash)
+            let hash_ptr = ffi::btck_block_tree_entry_get_block_hash(tip);
+            if hash_ptr.is_null() {
+                anyhow::bail!("failed to get block hash");
+            }
 
-            Ok(bitcoin::BlockHash::from_byte_array(hash_bytes))
+            // Copy hash bytes
+            let hash_bytes = std::slice::from_raw_parts(hash_ptr as *const u8, 32);
+            Ok(BlockHash::from_byte_array(hash_bytes.try_into().unwrap()))
         }
     }
 
-    pub fn get_block_hash(&self, height: i32) -> Result<bitcoin::BlockHash> {
+    pub fn get_block_hash(&self, height: i32) -> Result<BlockHash> {
         unsafe {
             let chain = ffi::btck_chainstate_manager_get_active_chain(self.chainman);
             if chain.is_null() {
                 anyhow::bail!("no active chain");
             }
 
-            let block_index = ffi::btck_chain_get_block_index_by_height(chain, height);
-            if block_index.is_null() {
+            let block_tree_entry = ffi::btck_chain_get_by_height(chain, height);
+            if block_tree_entry.is_null() {
                 anyhow::bail!("block not found at height {}", height);
             }
 
-            let mut hash_bytes = [0u8; 32];
-            ffi::btck_block_index_get_block_hash(block_index, hash_bytes.as_mut_ptr());
+            // Get block hash (returns *const btck_BlockHash)
+            let hash_ptr = ffi::btck_block_tree_entry_get_block_hash(block_tree_entry);
+            if hash_ptr.is_null() {
+                anyhow::bail!("failed to get block hash");
+            }
 
-            Ok(bitcoin::BlockHash::from_byte_array(hash_bytes))
+            // Copy hash bytes
+            let hash_bytes = std::slice::from_raw_parts(hash_ptr as *const u8, 32);
+            Ok(BlockHash::from_byte_array(hash_bytes.try_into().unwrap()))
         }
     }
 
