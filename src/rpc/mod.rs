@@ -1,6 +1,6 @@
 // src/rpc/mod.rs
 pub mod blockchain;
-pub mod network;
+// pub mod network; // Temporarily disabled - requires ConnectionManager
 
 use anyhow::Result;
 use axum::{routing::post, Router};

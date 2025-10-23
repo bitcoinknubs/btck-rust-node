@@ -1,7 +1,8 @@
 use crate::ffi;
 use anyhow::Result;
+use bitcoin::BlockHash;
 use std::ffi::{c_void, CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_char;
 use std::path::PathBuf;
 
 // Chain type constants (matching bitcoinkernel.h)
@@ -128,6 +129,50 @@ impl Kernel {
         }
     }
 
+    // Alias for active_height
+    pub fn get_height(&self) -> Result<i32> {
+        self.active_height()
+    }
+
+    pub fn get_best_block_hash(&self) -> Result<bitcoin::BlockHash> {
+        unsafe {
+            let chain = ffi::btck_chainstate_manager_get_active_chain(self.chainman);
+            if chain.is_null() {
+                anyhow::bail!("no active chain");
+            }
+
+            let tip = ffi::btck_chain_get_tip(chain);
+            if tip.is_null() {
+                anyhow::bail!("no chain tip");
+            }
+
+            // Get block hash from tip
+            let mut hash_bytes = [0u8; 32];
+            ffi::btck_block_index_get_block_hash(tip, hash_bytes.as_mut_ptr());
+
+            Ok(bitcoin::BlockHash::from_byte_array(hash_bytes))
+        }
+    }
+
+    pub fn get_block_hash(&self, height: i32) -> Result<bitcoin::BlockHash> {
+        unsafe {
+            let chain = ffi::btck_chainstate_manager_get_active_chain(self.chainman);
+            if chain.is_null() {
+                anyhow::bail!("no active chain");
+            }
+
+            let block_index = ffi::btck_chain_get_block_index_by_height(chain, height);
+            if block_index.is_null() {
+                anyhow::bail!("block not found at height {}", height);
+            }
+
+            let mut hash_bytes = [0u8; 32];
+            ffi::btck_block_index_get_block_hash(block_index, hash_bytes.as_mut_ptr());
+
+            Ok(bitcoin::BlockHash::from_byte_array(hash_bytes))
+        }
+    }
+
     pub fn import_blocks(&self, paths: &[String]) -> Result<i32> {
         let c_paths: Vec<CString> = paths
             .iter()
@@ -146,6 +191,35 @@ impl Kernel {
             )
         };
         Ok(rc)
+    }
+
+    pub fn process_block(&self, raw: &[u8]) -> Result<()> {
+        use std::os::raw::c_int;
+
+        let ptr = unsafe {
+            ffi::btck_block_create(raw.as_ptr() as *const c_void, raw.len())
+        };
+
+        if ptr.is_null() {
+            anyhow::bail!("btck_block_create failed");
+        }
+
+        let mut new_block: c_int = 0;
+        let rc = unsafe {
+            ffi::btck_chainstate_manager_process_block(
+                self.chainman,
+                ptr,
+                &mut new_block as *mut c_int,
+            )
+        };
+
+        unsafe { ffi::btck_block_destroy(ptr) };
+
+        if rc != 0 {
+            anyhow::bail!("process_block rc={} new_block={}", rc, new_block);
+        }
+
+        Ok(())
     }
 }
 
