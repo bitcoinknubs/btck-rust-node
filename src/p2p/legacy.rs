@@ -78,6 +78,7 @@ impl Peer {
         let raw = message::RawNetworkMessage::new(self.magic, msg);
         let bytes = encode::serialize(&raw);
         self.stream.write_all(&bytes).await?;
+        self.stream.flush().await?;  // CRITICAL: Ensure data is sent to peer!
         Ok(())
     }
 
