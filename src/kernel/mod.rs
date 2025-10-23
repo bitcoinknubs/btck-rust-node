@@ -41,6 +41,10 @@ unsafe impl Sync for Kernel {}
 
 impl Kernel {
     pub fn new(chain: &str, datadir: &PathBuf, blocksdir: &PathBuf) -> Result<Self> {
+        eprintln!("[kernel] Initializing kernel for chain: {}", chain);
+        eprintln!("[kernel] Data directory: {:?}", datadir);
+        eprintln!("[kernel] Blocks directory: {:?}", blocksdir);
+
         let chain_type: u8 = match chain {
             "main" | "mainnet" => CHAIN_MAIN,
             "testnet" => CHAIN_TESTNET,
@@ -49,28 +53,27 @@ impl Kernel {
             _ => CHAIN_REGTEST,
         };
 
+        eprintln!("[kernel] Creating context options...");
         let ctx_opts = unsafe { ffi::btck_context_options_create() };
         if ctx_opts.is_null() {
-            anyhow::bail!("btck_context_options_create failed");
+            anyhow::bail!("btck_context_options_create failed - libbitcoinkernel may not be loaded");
         }
+        eprintln!("[kernel] Context options created successfully");
 
+        eprintln!("[kernel] Creating chain parameters...");
         let chain_params = unsafe { ffi::btck_chain_parameters_create(chain_type) };
         if chain_params.is_null() {
             unsafe { ffi::btck_context_options_destroy(ctx_opts) };
             anyhow::bail!("btck_chain_parameters_create failed");
         }
+        eprintln!("[kernel] Chain parameters created successfully");
+
         unsafe { ffi::btck_context_options_set_chainparams(ctx_opts, chain_params) };
 
-        let log_opts: ffi::btck_LoggingOptions = unsafe { std::mem::zeroed() };
-        let _conn = unsafe {
-            ffi::btck_logging_connection_create(
-                Some(log_cb),
-                std::ptr::null_mut(),
-                None,
-                log_opts,
-            )
-        };
+        // Skip logging connection for now to avoid potential issues
+        eprintln!("[kernel] Skipping logging connection setup");
 
+        eprintln!("[kernel] Creating context...");
         let ctx = unsafe { ffi::btck_context_create(ctx_opts) };
         if ctx.is_null() {
             unsafe {
@@ -80,7 +83,9 @@ impl Kernel {
             anyhow::bail!("btck_context_create failed");
         }
         unsafe { ffi::btck_context_options_destroy(ctx_opts) };
+        eprintln!("[kernel] Context created successfully");
 
+        eprintln!("[kernel] Creating chainstate manager options...");
         let data_c = CString::new(datadir.to_string_lossy().as_bytes())?;
         let blocks_c = CString::new(blocksdir.to_string_lossy().as_bytes())?;
         let chainman_opts = unsafe {
@@ -99,13 +104,16 @@ impl Kernel {
             }
             anyhow::bail!("btck_chainstate_manager_options_create failed");
         }
+        eprintln!("[kernel] Chainstate manager options created successfully");
 
+        eprintln!("[kernel] Setting chainstate options...");
         unsafe {
             ffi::btck_chainstate_manager_options_update_block_tree_db_in_memory(chainman_opts, 1);
             ffi::btck_chainstate_manager_options_update_chainstate_db_in_memory(chainman_opts, 1);
             ffi::btck_chainstate_manager_options_set_worker_threads_num(chainman_opts, 2);
         }
 
+        eprintln!("[kernel] Creating chainstate manager...");
         let chainman = unsafe { ffi::btck_chainstate_manager_create(chainman_opts) };
         if chainman.is_null() {
             unsafe {
@@ -116,7 +124,9 @@ impl Kernel {
             anyhow::bail!("btck_chainstate_manager_create failed");
         }
         unsafe { ffi::btck_chainstate_manager_options_destroy(chainman_opts) };
+        eprintln!("[kernel] Chainstate manager created successfully");
 
+        eprintln!("[kernel] Kernel initialization complete!");
         Ok(Self { ctx, chain_params, chainman })
     }
 
