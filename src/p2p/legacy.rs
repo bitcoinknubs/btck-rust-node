@@ -478,20 +478,22 @@ impl PeerManager {
     }
 
     async fn respond_getheaders(&mut self, from: SocketAddr, req: &msg_blk::GetHeadersMessage) -> Result<()> {
-        // We must respond to GetHeaders, even during IBD
-        // Otherwise peers will disconnect us for not responding
-
         eprintln!("[p2p] <<< Peer {from} requested headers with {} locators", req.locator_hashes.len());
 
-        // During IBD, we only have genesis, so we can't provide useful headers
-        // Send empty headers to indicate "I don't have headers beyond your locator"
-        // This is a valid response and keeps the peer connection alive
+        // Bitcoin Core behavior: During IBD (headers-first sync phase),
+        // IGNORE GetHeaders requests from peers to avoid being marked as "useless"
+        // This prevents peers from disconnecting us for having no useful data
+        if !self.headers_synced {
+            eprintln!("[p2p]     IGNORING GetHeaders during headers sync (prevents peer disconnect)");
+            return Ok(());
+        }
 
+        // After headers sync is complete, respond with our headers
         let headers_response: Vec<BlockHeader> = Vec::new();
 
         if let Some(p) = self.peers.get_mut(&from) {
             p.send(message::NetworkMessage::Headers(headers_response)).await?;
-            eprintln!("[p2p]     Sent empty Headers response (we only have genesis)");
+            eprintln!("[p2p]     Sent Headers response");
         }
 
         // Note: In the future, when we have headers:
@@ -520,11 +522,18 @@ impl PeerManager {
             // 타임아웃된 블록 재할당
             for h in self.downloader.reassign_timeouts() { self.downloader.push_many([h]); }
 
-            // 모든 피어를 라운드로빈 폴링 (각 100ms)
+            // 모든 피어를 라운드로빈 폴링
+            // IBD 중에는 더 긴 타임아웃 사용 (Headers 메시지는 큼)
+            let recv_timeout = if self.headers_synced {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(500)  // Headers sync 중에는 더 길게
+            };
+
             let addrs: Vec<SocketAddr> = self.peers.keys().copied().collect();
             for addr in addrs {
                 let Some(p) = self.peers.get_mut(&addr) else { continue; };
-                let maybe = match timeout(Duration::from_millis(100), p.recv()).await {
+                let maybe = match timeout(recv_timeout, p.recv()).await {
                     Ok(Ok(m)) => Some(m),
                     Ok(Err(e)) => {
                         eprintln!("[p2p] recv error from {addr}: {e:#}; dropping peer");
@@ -535,11 +544,16 @@ impl PeerManager {
                 };
 
                 if let Some(msg) = maybe {
-                    // Debug: log all received messages
+                    // Debug: log all received messages with timestamp
                     let cmd = msg.command();
                     let cmd_str = cmd.as_ref();
                     if cmd_str != "ping" && cmd_str != "pong" {
                         eprintln!("[p2p] recv from {addr}: {}", cmd_str);
+                    }
+
+                    // Special logging for Headers messages since they're critical for IBD
+                    if cmd_str == "headers" {
+                        eprintln!("[p2p] ⭐ HEADERS MESSAGE RECEIVED from {addr} ⭐");
                     }
 
                     match msg {
