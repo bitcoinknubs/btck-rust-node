@@ -90,6 +90,10 @@ async fn main() -> Result<()> {
             _ => bitcoin::Network::Regtest,
         };
 
+        // Get current height from Kernel for P2P initialization
+        let current_height = kernel.get_height().unwrap_or(0);
+        eprintln!("[p2p] Starting P2P with current height: {}", current_height);
+
         let peers_cli = args.peer.clone();
         let k = kernel.clone();
         let m = mempool.clone();
@@ -120,13 +124,13 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let mut pm = p2p::PeerManager::new(net, "/btck-mini-node:0.1/")
+            let mut pm = p2p::PeerManager::with_start_height(net, "/btck-mini-node:0.1/", current_height)
                 .with_block_processor(process_block)
                 .with_tx_processor(process_tx);
 
             for p in peers_cli {
                 if let Ok(addr) = p.parse::<SocketAddr>() {
-                    let _ = pm.add_outbound(addr, 0).await;
+                    let _ = pm.add_outbound(addr, current_height).await;
                 }
             }
             if pm.peers_len() < 2 {
