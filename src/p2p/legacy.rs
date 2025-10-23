@@ -309,7 +309,7 @@ impl PeerManager {
     }
     pub fn peers_len(&self) -> usize { self.peers.len() }
 
-    pub async fn add_outbound(&mut self, addr: SocketAddr, start_height: i32) -> Result<()> {
+    pub async fn add_outbound(&mut self, addr: SocketAddr) -> Result<()> {
         if self.peers.contains_key(&addr) { return Ok(()); }
         let mut p = Peer::connect(addr, self.net).await?;
 
@@ -323,7 +323,10 @@ impl PeerManager {
             p2p::ServiceFlags::WITNESS
         };
 
-        p.handshake(&self.user_agent, start_height, our_services).await?;
+        // CRITICAL: Use self.start_height, not a parameter
+        // start_height represents OUR current blockchain height (blocks we have)
+        // During IBD this should be 0 (or actual verified block count)
+        p.handshake(&self.user_agent, self.start_height, our_services).await?;
 
         // 피어의 높이를 추적
         let peer_height = p.their_start_height;
@@ -369,7 +372,7 @@ impl PeerManager {
                         if connected >= max_boot || attempts >= 30 { return Ok(connected); }
                         attempts += 1;
                         if self.peers.contains_key(&addr) { continue; }
-                        match self.add_outbound(addr, self.start_height).await {
+                        match self.add_outbound(addr).await {
                             Ok(_) => { eprintln!("[bootstrap] connected to {addr}"); connected += 1; }
                             Err(e) => eprintln!("[bootstrap] connect failed {addr}: {e:#}"),
                         }

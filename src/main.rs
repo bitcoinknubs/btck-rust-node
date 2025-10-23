@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
 
             for p in peers_cli {
                 if let Ok(addr) = p.parse::<SocketAddr>() {
-                    let _ = pm.add_outbound(addr, current_height).await;
+                    let _ = pm.add_outbound(addr).await;
                 }
             }
             if pm.peers_len() < 2 {
