@@ -704,7 +704,7 @@ impl PeerManager {
                                 };
 
                                 if !self.peers.contains_key(&sock) {
-                                    let _ = self.add_outbound(sock, 0).await;
+                                    let _ = self.add_outbound(sock).await;
                                     added += 1;
                                 }
                                 if added >= 2 { break; }
