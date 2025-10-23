@@ -242,15 +242,22 @@ pub struct PeerManager {
 
     recent_chain: Vec<BlockHash>,
     last_locator: Vec<BlockHash>,
+    start_height: i32,  // Current blockchain height
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
     on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
 }
 
 impl PeerManager {
     pub fn new(net: Network, user_agent: &str) -> Self {
+        Self::with_start_height(net, user_agent, 0)
+    }
+
+    pub fn with_start_height(net: Network, user_agent: &str, start_height: i32) -> Self {
         let g = genesis_block(net).block_hash();
         let mut have = HashSet::new();
         have.insert(g);
+
+        eprintln!("[p2p] Initializing PeerManager with start_height={}", start_height);
 
         Self {
             net,
@@ -262,6 +269,7 @@ impl PeerManager {
             best_header_tip: g,
             recent_chain: vec![g],
             last_locator: vec![g],
+            start_height,
             on_block: None,
             on_tx: None,
         }
@@ -316,7 +324,7 @@ impl PeerManager {
                         if connected >= max_boot || attempts >= 30 { return Ok(connected); }
                         attempts += 1;
                         if self.peers.contains_key(&addr) { continue; }
-                        match self.add_outbound(addr, 0).await {
+                        match self.add_outbound(addr, self.start_height).await {
                             Ok(_) => { eprintln!("[bootstrap] connected to {addr}"); connected += 1; }
                             Err(e) => eprintln!("[bootstrap] connect failed {addr}: {e:#}"),
                         }
