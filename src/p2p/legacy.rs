@@ -95,10 +95,10 @@ impl Peer {
         Ok(raw.into_payload())
     }
 
-    pub async fn handshake(&mut self, user_agent: &str, start_height: i32) -> Result<()> {
+    pub async fn handshake(&mut self, user_agent: &str, start_height: i32, our_services: p2p::ServiceFlags) -> Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
         let mut vm = msg_net::VersionMessage::new(
-            p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS,
+            our_services,  // Use passed-in ServiceFlags instead of hardcoded
             now,
             address::Address::new(&"0.0.0.0:0".parse().unwrap(), p2p::ServiceFlags::NONE),
             address::Address::new(&"0.0.0.0:0".parse().unwrap(), p2p::ServiceFlags::NONE),
@@ -109,7 +109,7 @@ impl Peer {
         vm.version = ADVERTISED_PROTO;
 
         self.send(message::NetworkMessage::Version(vm)).await?;
-        eprintln!("[p2p] sent Version (ua={user_agent}, proto={})", ADVERTISED_PROTO);
+        eprintln!("[p2p] sent Version (ua={user_agent}, proto={}, services={:?})", ADVERTISED_PROTO, our_services);
 
         let mut got_version = false;
         let mut got_verack = false;
@@ -312,7 +312,18 @@ impl PeerManager {
     pub async fn add_outbound(&mut self, addr: SocketAddr, start_height: i32) -> Result<()> {
         if self.peers.contains_key(&addr) { return Ok(()); }
         let mut p = Peer::connect(addr, self.net).await?;
-        p.handshake(&self.user_agent, start_height).await?;
+
+        // Bitcoin Core behavior: During IBD, don't advertise NETWORK service
+        // Only advertise WITNESS capability during headers sync
+        // After sync completes, we can advertise full node capabilities
+        let our_services = if self.headers_synced {
+            p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS
+        } else {
+            // During IBD: Only WITNESS, no NETWORK (we're downloading, not serving)
+            p2p::ServiceFlags::WITNESS
+        };
+
+        p.handshake(&self.user_agent, start_height, our_services).await?;
 
         // 피어의 높이를 추적
         let peer_height = p.their_start_height;
