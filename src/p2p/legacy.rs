@@ -399,11 +399,17 @@ impl PeerManager {
     }
 
     async fn respond_getheaders(&mut self, from: SocketAddr, _req: &msg_blk::GetHeadersMessage) -> Result<()> {
-        let v: Vec<BlockHeader> = Vec::new();
-        if let Some(p) = self.peers.get_mut(&from) {
-            p.send(message::NetworkMessage::Headers(v)).await?;
-            eprintln!("[p2p] sent Headers(reply) size=0");
-        }
+        // During IBD, don't respond to getheaders requests from peers
+        // This is similar to Bitcoin Core's behavior during initial sync
+        // We only have genesis, so there's nothing useful to send anyway
+
+        // In the future, when we have headers, we should:
+        // 1. Find the common ancestor from req.locator_hashes
+        // 2. Send up to 2000 headers starting from that point
+
+        // For now, just ignore the request silently
+        // Don't send empty headers as it makes peers disconnect
+
         Ok(())
     }
 
