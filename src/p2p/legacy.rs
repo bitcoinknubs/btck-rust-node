@@ -243,6 +243,7 @@ pub struct PeerManager {
     recent_chain: Vec<BlockHash>,
     last_locator: Vec<BlockHash>,
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
+    on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
 }
 
 impl PeerManager {
@@ -262,6 +263,7 @@ impl PeerManager {
             recent_chain: vec![g],
             last_locator: vec![g],
             on_block: None,
+            on_tx: None,
         }
     }
 
@@ -270,6 +272,14 @@ impl PeerManager {
         F: Fn(&[u8]) -> anyhow::Result<()> + Send + Sync + 'static,
     {
         self.on_block = Some(Arc::new(f));
+        self
+    }
+
+    pub fn with_tx_processor<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync + 'static,
+    {
+        self.on_tx = Some(Arc::new(f));
         self
     }
     pub fn peers_len(&self) -> usize { self.peers.len() }
@@ -530,6 +540,21 @@ impl PeerManager {
                         }
                         message::NetworkMessage::GetHeaders(gh) => {
                             let _ = self.respond_getheaders(addr, &gh).await;
+                        }
+                        message::NetworkMessage::Tx(tx) => {
+                            let txid = tx.compute_txid();
+                            eprintln!("[p2p] received tx: {}", txid);
+
+                            // Process transaction via callback
+                            if let Some(ref cb) = self.on_tx {
+                                let tx_clone = tx.clone();
+                                let cb = cb.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = (cb)(&tx_clone) {
+                                        eprintln!("[p2p] tx processing error {}: {:#}", tx_clone.compute_txid(), e);
+                                    }
+                                });
+                            }
                         }
                         other => {
                             eprintln!("[p2p] other: {:?}", other.command());

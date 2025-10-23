@@ -241,6 +241,72 @@ impl Kernel {
 
         Ok(())
     }
+
+    /// Validate a transaction's basic structure and rules
+    /// Returns (is_valid, rejection_reason)
+    pub fn validate_transaction(&self, tx: &bitcoin::Transaction) -> Result<(bool, Option<String>)> {
+        use bitcoin::consensus::Encodable;
+
+        // Basic size checks
+        let mut size = vec![];
+        tx.consensus_encode(&mut size).map_err(|e| anyhow::anyhow!("encoding error: {}", e))?;
+
+        if size.len() < 60 {
+            return Ok((false, Some("transaction too small".to_string())));
+        }
+
+        // Check inputs and outputs exist
+        if tx.input.is_empty() {
+            return Ok((false, Some("no inputs".to_string())));
+        }
+
+        if tx.output.is_empty() {
+            return Ok((false, Some("no outputs".to_string())));
+        }
+
+        // Check for negative or overflow output values
+        let mut total_out = 0u64;
+        for out in &tx.output {
+            if out.value.to_sat() > 21_000_000 * 100_000_000 {
+                return Ok((false, Some("output value too high".to_string())));
+            }
+            total_out = total_out.checked_add(out.value.to_sat())
+                .ok_or_else(|| anyhow::anyhow!("output value overflow"))?;
+        }
+
+        if total_out > 21_000_000 * 100_000_000 {
+            return Ok((false, Some("total output value too high".to_string())));
+        }
+
+        // Check for duplicate inputs (same prevout)
+        let mut seen_prevouts = std::collections::HashSet::new();
+        for input in &tx.input {
+            if !seen_prevouts.insert(input.previous_output) {
+                return Ok((false, Some("duplicate input".to_string())));
+            }
+        }
+
+        // TODO: Full consensus validation through Kernel FFI
+        // This requires additional FFI bindings for:
+        // - btck_chainstate_manager_process_transaction
+        // - btck_transaction_check_inputs (UTXO validation)
+        // - Script execution and signature validation
+        //
+        // For now, we only do basic structural checks above.
+        // The mempool will do additional policy checks.
+
+        Ok((true, None))
+    }
+
+    /// Check if a transaction's inputs are available in UTXO set
+    /// Returns (all_available, missing_count)
+    pub fn check_tx_inputs(&self, _tx: &bitcoin::Transaction) -> Result<(bool, usize)> {
+        // TODO: Implement UTXO checking through Kernel FFI
+        // This requires:
+        // - btck_chainstate_manager_get_utxo(outpoint) -> Option<TxOut>
+        // For now, assume inputs are available
+        Ok((true, 0))
+    }
 }
 
 impl Drop for Kernel {

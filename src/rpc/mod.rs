@@ -8,17 +8,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::kernel::Kernel;
+use crate::mempool::Mempool;
 
 #[derive(Clone)]
 pub struct AppState {
     pub kernel: Arc<Kernel>,
+    pub mempool: Arc<Mempool>,
 }
 
 pub async fn start_rpc_server(
     addr: SocketAddr,
     kernel: Arc<Kernel>,
+    mempool: Arc<Mempool>,
 ) -> Result<()> {
-    let state = AppState { kernel };
+    let state = AppState { kernel, mempool };
 
     let app = Router::new()
         // Blockchain RPCs
