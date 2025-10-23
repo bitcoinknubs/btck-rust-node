@@ -485,20 +485,18 @@ impl PeerManager {
     async fn respond_getheaders(&mut self, from: SocketAddr, req: &msg_blk::GetHeadersMessage) -> Result<()> {
         eprintln!("[p2p] <<< Peer {from} requested headers with {} locators", req.locator_hashes.len());
 
-        // Bitcoin Core behavior: During IBD (headers-first sync phase),
-        // IGNORE GetHeaders requests from peers to avoid being marked as "useless"
-        // This prevents peers from disconnecting us for having no useful data
-        if !self.headers_synced {
-            eprintln!("[p2p]     IGNORING GetHeaders during headers sync (prevents peer disconnect)");
-            return Ok(());
-        }
-
-        // After headers sync is complete, respond with our headers
+        // Bitcoin Core behavior: ALWAYS respond to GetHeaders, even during IBD
+        // Send empty Headers to maintain connection and indicate we have no headers beyond genesis
+        // Ignoring the request would make us appear unresponsive and cause disconnection
         let headers_response: Vec<BlockHeader> = Vec::new();
 
         if let Some(p) = self.peers.get_mut(&from) {
             p.send(message::NetworkMessage::Headers(headers_response)).await?;
-            eprintln!("[p2p]     Sent Headers response");
+            if !self.headers_synced {
+                eprintln!("[p2p]     >>> Sent empty Headers (IBD in progress)");
+            } else {
+                eprintln!("[p2p]     >>> Sent empty Headers response");
+            }
         }
 
         // Note: In the future, when we have headers:
