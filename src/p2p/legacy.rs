@@ -408,7 +408,7 @@ impl PeerManager {
         }
     }
 
-    async fn respond_getheaders(&mut self, from: SocketAddr, _req: &msg_blk::GetHeadersMessage) -> Result<()> {
+    async fn respond_getheaders(&mut self, _from: SocketAddr, _req: &msg_blk::GetHeadersMessage) -> Result<()> {
         // During IBD, don't respond to getheaders requests from peers
         // This is similar to Bitcoin Core's behavior during initial sync
         // We only have genesis, so there's nothing useful to send anyway
@@ -459,8 +459,9 @@ impl PeerManager {
                 if let Some(msg) = maybe {
                     // Debug: log all received messages
                     let cmd = msg.command();
-                    if cmd != "ping" && cmd != "pong" {
-                        eprintln!("[p2p] recv from {addr}: {}", cmd);
+                    let cmd_str = cmd.as_ref();
+                    if cmd_str != "ping" && cmd_str != "pong" {
+                        eprintln!("[p2p] recv from {addr}: {}", cmd_str);
                     }
 
                     match msg {
