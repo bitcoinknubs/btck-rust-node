@@ -46,6 +46,7 @@ pub struct Peer {
     magic: p2p::Magic,
     stream: TcpStream,
     pub their_services: p2p::ServiceFlags,
+    pub their_start_height: i32,  // 피어의 블록 높이
     negotiated: bool,
     sendheaders_sent: bool,
     wtxidrelay_sent: bool,
@@ -65,6 +66,7 @@ impl Peer {
             magic: net.magic(),
             stream,
             their_services: p2p::ServiceFlags::NONE,
+            their_start_height: 0,
             negotiated: false,
             sendheaders_sent: false,
             wtxidrelay_sent: false,
@@ -121,6 +123,7 @@ impl Peer {
                         peer_vm.user_agent, peer_vm.start_height, peer_vm.services
                     );
                     self.their_services = peer_vm.services;
+                    self.their_start_height = peer_vm.start_height;  // 피어 높이 저장
                     // 먼저 Verack을 회신
                     self.send(message::NetworkMessage::Verack).await?;
                     eprintln!("[p2p] sent Verack");
@@ -243,6 +246,13 @@ pub struct PeerManager {
     recent_chain: Vec<BlockHash>,
     last_locator: Vec<BlockHash>,
     start_height: i32,  // Current blockchain height
+
+    // Headers-First Sync 상태 추적 (Bitcoin Core 방식)
+    headers_synced: bool,                       // 헤더 동기화 완료 여부
+    peer_heights: HashMap<SocketAddr, i32>,     // 각 피어의 start_height
+    best_known_height: i32,                     // 네트워크의 최고 높이
+    header_chain_height: i32,                   // 현재 헤더 체인의 높이
+
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
     on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
 }
@@ -258,6 +268,7 @@ impl PeerManager {
         have.insert(g);
 
         eprintln!("[p2p] Initializing PeerManager with start_height={}", start_height);
+        eprintln!("[p2p] Starting in HEADERS-FIRST SYNC mode");
 
         Self {
             net,
@@ -270,6 +281,10 @@ impl PeerManager {
             recent_chain: vec![g],
             last_locator: vec![g],
             start_height,
+            headers_synced: false,
+            peer_heights: HashMap::new(),
+            best_known_height: 0,
+            header_chain_height: 0,
             on_block: None,
             on_tx: None,
         }
@@ -296,9 +311,23 @@ impl PeerManager {
         if self.peers.contains_key(&addr) { return Ok(()); }
         let mut p = Peer::connect(addr, self.net).await?;
         p.handshake(&self.user_agent, start_height).await?;
+
+        // 피어의 높이를 추적
+        let peer_height = p.their_start_height;
+        self.peer_heights.insert(addr, peer_height);
+
+        // 네트워크의 최고 높이 갱신
+        if peer_height > self.best_known_height {
+            self.best_known_height = peer_height;
+            eprintln!("[p2p] Updated best known height: {} from peer {}", peer_height, addr);
+        }
+
         self.peers.insert(addr, p);
-        // 붙자마자 헤더 요청
-        self.request_headers(addr).await?;
+
+        // Headers-First: 헤더 동기화 중이면 헤더만 요청
+        if !self.headers_synced {
+            self.request_headers(addr).await?;
+        }
         Ok(())
     }
 
@@ -384,28 +413,68 @@ impl PeerManager {
         Ok(())
     }
 
-    /// 새 헤더 확장 & 블록 큐잉
-    fn extend_connected_headers_and_queue(&mut self, new_headers: &[BlockHeader]) {
+    /// 새 헤더 확장 (Bitcoin Core 방식 - 헤더만 처리)
+    fn extend_headers(&mut self, new_headers: &[BlockHeader]) {
         for hh in new_headers {
             let h = hh.block_hash();
             self.prev_map.insert(h, hh.prev_blockhash);
             self.have_header.insert(h);
             if *self.recent_chain.last().unwrap_or(&h) == hh.prev_blockhash {
                 self.recent_chain.push(h);
+                self.header_chain_height += 1;  // 헤더 체인 높이 증가
             }
         }
+
+        // 가장 긴 체인 찾기
         loop {
             let tip = self.best_header_tip;
             let next = self.prev_map.iter()
                 .find_map(|(child, prev)| if *prev == tip { Some(*child) } else { None });
             match next {
                 Some(nh) => {
-                    self.downloader.push_many([nh]);
                     self.best_header_tip = nh;
                 }
                 None => break,
             }
         }
+    }
+
+    /// 헤더 동기화가 완료되었는지 확인 (Bitcoin Core 방식)
+    fn check_headers_sync_complete(&mut self) {
+        if self.headers_synced {
+            return;
+        }
+
+        // 헤더 체인이 알려진 최고 높이에 근접했는지 확인
+        // Bitcoin Core는 약간의 여유를 두고 체크함 (144 블록 = 1일)
+        const HEADER_SYNC_THRESHOLD: i32 = 144;
+
+        if self.best_known_height > 0 &&
+           self.header_chain_height >= self.best_known_height - HEADER_SYNC_THRESHOLD {
+            self.headers_synced = true;
+            eprintln!("╔════════════════════════════════════════════════════════════╗");
+            eprintln!("║  HEADERS SYNC COMPLETE!                                    ║");
+            eprintln!("║  Header chain height: {}                               ║", self.header_chain_height);
+            eprintln!("║  Best known height:   {}                               ║", self.best_known_height);
+            eprintln!("║  Now starting BLOCK DOWNLOAD phase...                      ║");
+            eprintln!("╚════════════════════════════════════════════════════════════╝");
+
+            // 헤더 동기화 완료 후 블록 다운로드 큐 준비
+            self.queue_blocks_from_headers();
+        }
+    }
+
+    /// 헤더 동기화 완료 후 모든 블록을 다운로드 큐에 추가
+    fn queue_blocks_from_headers(&mut self) {
+        let mut blocks_to_download = Vec::new();
+
+        // recent_chain의 모든 블록을 큐에 추가 (genesis 제외)
+        for hash in self.recent_chain.iter().skip(1) {
+            blocks_to_download.push(*hash);
+        }
+
+        eprintln!("[p2p] Queuing {} blocks for download", blocks_to_download.len());
+        self.downloader.push_many(blocks_to_download);
     }
 
     async fn respond_getheaders(&mut self, from: SocketAddr, req: &msg_blk::GetHeadersMessage) -> Result<()> {
@@ -479,18 +548,37 @@ impl PeerManager {
                             if !h.is_empty() {
                                 last_headers_ts = tokio::time::Instant::now();
 
-                                self.extend_connected_headers_and_queue(&h);
+                                // Bitcoin Core 방식: 헤더만 처리
+                                self.extend_headers(&h);
 
+                                // 진행률 표시
+                                let progress = if self.best_known_height > 0 {
+                                    (self.header_chain_height as f64 / self.best_known_height as f64 * 100.0).min(100.0)
+                                } else {
+                                    0.0
+                                };
+                                eprintln!("[p2p] Headers sync progress: {:.1}% ({}/{})",
+                                         progress, self.header_chain_height, self.best_known_height);
+
+                                // 더 많은 헤더가 있으면 계속 요청
                                 if h.len() == MAX_HEADERS_PER_MSG {
+                                    eprintln!("[p2p] More headers available, requesting next batch...");
                                     let _ = self.request_headers(addr).await;
                                 } else {
-                                    let assign = self.downloader.poll_assign(addr);
-                                    if !assign.is_empty() {
-                                        let invs: Vec<msg_blk::Inventory> =
-                                            assign.iter().map(|h| msg_blk::Inventory::WitnessBlock(*h)).collect();
-                                        if let Some(p) = self.peers.get_mut(&addr) {
-                                            eprintln!("[p2p] send GetData for {} blocks", invs.len());
-                                            let _ = p.send(message::NetworkMessage::GetData(invs)).await;
+                                    eprintln!("[p2p] Header batch completed (received {} headers)", h.len());
+                                    // 헤더 배치가 완료되었는지 확인
+                                    self.check_headers_sync_complete();
+
+                                    // 헤더 동기화가 완료되었다면 블록 다운로드 시작
+                                    if self.headers_synced {
+                                        let assign = self.downloader.poll_assign(addr);
+                                        if !assign.is_empty() {
+                                            let invs: Vec<msg_blk::Inventory> =
+                                                assign.iter().map(|h| msg_blk::Inventory::WitnessBlock(*h)).collect();
+                                            if let Some(p) = self.peers.get_mut(&addr) {
+                                                eprintln!("[p2p] Starting block download: requesting {} blocks", invs.len());
+                                                let _ = p.send(message::NetworkMessage::GetData(invs)).await;
+                                            }
                                         }
                                     }
                                 }
@@ -498,6 +586,13 @@ impl PeerManager {
                         }
                         message::NetworkMessage::Inv(inv) => {
                             eprintln!("[p2p] inv: {} entries", inv.len());
+
+                            // Bitcoin Core 방식: 헤더 동기화 완료 후에만 블록 다운로드
+                            if !self.headers_synced {
+                                eprintln!("[p2p] Ignoring Inv (still syncing headers)");
+                                continue;
+                            }
+
                             let need: Vec<BlockHash> = inv.iter()
                                 .filter_map(|i| match i {
                                     msg_blk::Inventory::Block(h) | msg_blk::Inventory::WitnessBlock(h) => Some(*h),
@@ -521,6 +616,12 @@ impl PeerManager {
                         message::NetworkMessage::Block(b) => {
                             let h = b.block_hash();
                             eprintln!("[p2p] block: {h}");
+
+                            // Bitcoin Core 방식: 헤더 동기화 완료 후에만 블록 처리
+                            if !self.headers_synced {
+                                eprintln!("[p2p] WARNING: Received block before headers sync complete, ignoring");
+                                continue;
+                            }
 
                             // 네트워크 루프는 즉시 다음으로 진행:
                             // 1) inflight에서 제거하고
