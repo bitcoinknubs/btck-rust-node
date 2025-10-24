@@ -125,7 +125,16 @@ impl Peer {
                     );
                     self.their_services = peer_vm.services;
                     self.their_start_height = peer_vm.start_height;  // 피어 높이 저장
-                    // 먼저 Verack을 회신
+
+                    // CRITICAL: BIP 339 - WtxidRelay MUST be sent BEFORE Verack!
+                    // Protocol version >= 70016 requires this order
+                    if !self.wtxidrelay_sent && peer_vm.version >= 70016 {
+                        self.send(message::NetworkMessage::WtxidRelay).await?;
+                        self.wtxidrelay_sent = true;
+                        eprintln!("[p2p] sent WtxidRelay (before Verack - BIP 339)");
+                    }
+
+                    // Now send Verack
                     self.send(message::NetworkMessage::Verack).await?;
                     eprintln!("[p2p] sent Verack");
                     got_version = true;
@@ -133,23 +142,19 @@ impl Peer {
                 message::NetworkMessage::Verack => {
                     eprintln!("[p2p] recv Verack");
                     self.verack_seen = true;
-                    // Verack 이후에 기능 협상
+                    // Verack 이후에 기능 협상 (SendHeaders, SendCmpct)
+                    // Note: WtxidRelay already sent before Verack (BIP 339 requirement)
                     if !self.sendheaders_sent {
                         self.send(message::NetworkMessage::SendHeaders).await?;
                         self.sendheaders_sent = true;
                         eprintln!("[p2p] sent SendHeaders");
                     }
-                    if !self.wtxidrelay_sent {
-                        self.send(message::NetworkMessage::SendCmpct(msg_cmpct::SendCmpct {
-                            version: 1,
-                            send_compact: true,
-                        })).await?;
-                        eprintln!("[p2p] sent SendCmpct(high)");
-
-                        self.send(message::NetworkMessage::WtxidRelay).await?;
-                        self.wtxidrelay_sent = true;
-                        eprintln!("[p2p] sent WtxidRelay");
-                    }
+                    // Send SendCmpct after Verack
+                    self.send(message::NetworkMessage::SendCmpct(msg_cmpct::SendCmpct {
+                        version: 1,
+                        send_compact: true,
+                    })).await?;
+                    eprintln!("[p2p] sent SendCmpct(high)");
                     got_verack = true;
                 }
                 other => {
