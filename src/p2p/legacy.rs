@@ -473,35 +473,69 @@ impl PeerManager {
         }
 
         // Bitcoin Core behavior: Process headers sequentially
-        // 1. Skip headers we already have
-        // 2. Add new headers that connect to our chain
-        // 3. Verify each header connects to the previous one
+        // Find the connection point and add headers from there
 
-        let mut added_count = 0;
-        for hh in new_headers {
+        let mut start_idx = None;
+
+        // Find where these headers connect to our chain
+        for (i, hh) in new_headers.iter().enumerate() {
             let h = hh.block_hash();
 
-            // Skip if we already have this header
+            // Skip headers we already have in our main chain
             if self.have_header.contains(&h) {
-                continue;
+                // Check if this is in our recent_chain
+                if self.recent_chain.contains(&h) {
+                    // This header is in our chain, continue from next one
+                    start_idx = Some(i + 1);
+                    continue;
+                }
             }
 
-            // Add to our maps
-            self.prev_map.insert(h, hh.prev_blockhash);
-            self.have_header.insert(h);
-
-            // Check if this header connects to our main chain
-            // It connects if its prev_blockhash is the current tip
+            // Check if this header connects to our chain tip
             if *self.recent_chain.last().unwrap() == hh.prev_blockhash {
+                start_idx = Some(i);
+                break;
+            }
+        }
+
+        // If we found a connection point, add headers from there
+        if let Some(start) = start_idx {
+            if start >= new_headers.len() {
+                // No new headers to add
+                return;
+            }
+
+            let mut added_count = 0;
+            for hh in &new_headers[start..] {
+                let h = hh.block_hash();
+
+                // Skip if we already have this header in our chain
+                if self.have_header.contains(&h) {
+                    continue;
+                }
+
+                // Verify this header connects to the previous one
+                if *self.recent_chain.last().unwrap() != hh.prev_blockhash {
+                    eprintln!("[p2p] ⚠️  Header chain break detected! Stopping at height {}",
+                             self.header_chain_height);
+                    break;
+                }
+
+                // Add to our chain
+                self.prev_map.insert(h, hh.prev_blockhash);
+                self.have_header.insert(h);
                 self.recent_chain.push(h);
                 self.header_chain_height += 1;
                 added_count += 1;
             }
-        }
 
-        if added_count > 0 {
-            eprintln!("[p2p] Added {} new headers to chain (height now: {})",
-                     added_count, self.header_chain_height);
+            if added_count > 0 {
+                eprintln!("[p2p] Added {} new headers to chain (height now: {})",
+                         added_count, self.header_chain_height);
+            }
+        } else {
+            eprintln!("[p2p] ⚠️  Received {} headers but none connect to our chain (tip: {}, height: {})",
+                     new_headers.len(), self.recent_chain.last().unwrap(), self.header_chain_height);
         }
 
         // Update best_header_tip to the latest in recent_chain
