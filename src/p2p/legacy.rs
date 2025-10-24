@@ -472,70 +472,44 @@ impl PeerManager {
             return;
         }
 
-        // Bitcoin Core behavior: Process headers sequentially
-        // Find the connection point and add headers from there
+        // Bitcoin Core behavior: Find first new header and add from there
+        // Process headers sequentially, verify connections
 
-        let mut start_idx = None;
+        let mut added_count = 0;
+        let mut current_tip = *self.recent_chain.last().unwrap();
 
-        // Find where these headers connect to our chain
-        for (i, hh) in new_headers.iter().enumerate() {
+        for hh in new_headers {
             let h = hh.block_hash();
 
-            // Skip headers we already have in our main chain
+            // Skip if we already have this header
             if self.have_header.contains(&h) {
-                // Check if this is in our recent_chain
-                if self.recent_chain.contains(&h) {
-                    // This header is in our chain, continue from next one
-                    start_idx = Some(i + 1);
-                    continue;
-                }
+                // Update current_tip to this header (it's in our chain)
+                current_tip = h;
+                continue;
             }
 
-            // Check if this header connects to our chain tip
-            if *self.recent_chain.last().unwrap() == hh.prev_blockhash {
-                start_idx = Some(i);
+            // This is a NEW header - check if it connects
+            if hh.prev_blockhash != current_tip {
+                eprintln!("[p2p] ⚠️  Header chain break! Expected prev={}, got prev={} (height {})",
+                         current_tip, hh.prev_blockhash, self.header_chain_height + 1);
                 break;
             }
+
+            // Add to our chain
+            self.prev_map.insert(h, hh.prev_blockhash);
+            self.have_header.insert(h);
+            self.recent_chain.push(h);
+            self.header_chain_height += 1;
+            current_tip = h;  // Update tip for next header
+            added_count += 1;
         }
 
-        // If we found a connection point, add headers from there
-        if let Some(start) = start_idx {
-            if start >= new_headers.len() {
-                // No new headers to add
-                return;
-            }
-
-            let mut added_count = 0;
-            for hh in &new_headers[start..] {
-                let h = hh.block_hash();
-
-                // Skip if we already have this header in our chain
-                if self.have_header.contains(&h) {
-                    continue;
-                }
-
-                // Verify this header connects to the previous one
-                if *self.recent_chain.last().unwrap() != hh.prev_blockhash {
-                    eprintln!("[p2p] ⚠️  Header chain break detected! Stopping at height {}",
-                             self.header_chain_height);
-                    break;
-                }
-
-                // Add to our chain
-                self.prev_map.insert(h, hh.prev_blockhash);
-                self.have_header.insert(h);
-                self.recent_chain.push(h);
-                self.header_chain_height += 1;
-                added_count += 1;
-            }
-
-            if added_count > 0 {
-                eprintln!("[p2p] Added {} new headers to chain (height now: {})",
-                         added_count, self.header_chain_height);
-            }
+        if added_count > 0 {
+            eprintln!("[p2p] Added {} new headers to chain (height now: {})",
+                     added_count, self.header_chain_height);
         } else {
-            eprintln!("[p2p] ⚠️  Received {} headers but none connect to our chain (tip: {}, height: {})",
-                     new_headers.len(), self.recent_chain.last().unwrap(), self.header_chain_height);
+            eprintln!("[p2p] Received {} headers but all were duplicates (height remains: {})",
+                     new_headers.len(), self.header_chain_height);
         }
 
         // Update best_header_tip to the latest in recent_chain
