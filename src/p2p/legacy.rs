@@ -314,15 +314,9 @@ impl PeerManager {
         if self.peers.contains_key(&addr) { return Ok(()); }
         let mut p = Peer::connect(addr, self.net).await?;
 
-        // Bitcoin Core behavior: During IBD, don't advertise NETWORK service
-        // Only advertise WITNESS capability during headers sync
-        // After sync completes, we can advertise full node capabilities
-        let our_services = if self.headers_synced {
-            p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS
-        } else {
-            // During IBD: Only WITNESS, no NETWORK (we're downloading, not serving)
-            p2p::ServiceFlags::WITNESS
-        };
+        // EXPERIMENTAL: Try advertising NETWORK during IBD
+        // Signet peers might require this (unlike mainnet Bitcoin Core behavior)
+        let our_services = p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS;
 
         // CRITICAL: Use self.start_height, not a parameter
         // start_height represents OUR current blockchain height (blocks we have)
@@ -343,10 +337,10 @@ impl PeerManager {
 
         // Bitcoin Core 방식: ONE sync peer만 선택
         // Headers-First: 첫 번째 피어를 sync peer로 선택
+        // Don't request headers here - let event loop handle it after peer is fully integrated
         if !self.headers_synced && self.sync_peer.is_none() {
             self.sync_peer = Some(addr);
             eprintln!("[p2p] ⭐ Selected {} as HEADERS SYNC PEER", addr);
-            self.request_headers(addr).await?;
         }
         Ok(())
     }
@@ -744,13 +738,28 @@ impl PeerManager {
                 }
             }
 
-            // 주기적 헤더 재요청(5초) - Bitcoin Core: sync peer에게만
-            if !self.headers_synced && tokio::time::Instant::now().duration_since(last_headers_ts) > Duration::from_secs(REREQ_SECS) {
+            // Initial and periodic header requests - Bitcoin Core: sync peer only
+            // Send initial request after 1 second, then re-request every 5 seconds if no response
+            if !self.headers_synced {
                 if let Some(sync_addr) = self.sync_peer {
                     if self.peers.contains_key(&sync_addr) {
-                        eprintln!("[p2p] re-request headers to sync peer {}", sync_addr);
-                        let _ = self.request_headers(sync_addr).await;
-                        last_headers_ts = tokio::time::Instant::now();
+                        let elapsed = tokio::time::Instant::now().duration_since(last_headers_ts);
+                        // Initial request after 1s, subsequent requests every 5s
+                        let should_request = if self.header_chain_height == 0 {
+                            elapsed > Duration::from_secs(1)  // Initial: 1 second delay
+                        } else {
+                            elapsed > Duration::from_secs(REREQ_SECS)  // Re-requests: 5 seconds
+                        };
+
+                        if should_request {
+                            if self.header_chain_height == 0 {
+                                eprintln!("[p2p] Initial headers request to sync peer {}", sync_addr);
+                            } else {
+                                eprintln!("[p2p] Re-request headers to sync peer {}", sync_addr);
+                            }
+                            let _ = self.request_headers(sync_addr).await;
+                            last_headers_ts = tokio::time::Instant::now();
+                        }
                     }
                 }
             }
