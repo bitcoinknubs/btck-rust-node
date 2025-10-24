@@ -421,16 +421,16 @@ impl PeerManager {
             eprintln!("[p2p]       ... and {} more", self.last_locator.len() - 5);
         }
 
-        // Use protocol version 70012 (BIP 130 - SendHeaders) for better compatibility
-        // Some peers may not respond correctly to version 70016
+        // Use same protocol version as advertised in Version message
+        // GetHeaders version should match our advertised protocol version
         let gh = msg_blk::GetHeadersMessage {
-            version: 70012,
+            version: ADVERTISED_PROTO,
             locator_hashes: self.last_locator.clone(),
             stop_hash: BlockHash::from_raw_hash(sha256d::Hash::all_zeros()),
         };
         if let Some(p) = self.peers.get_mut(&to) {
             p.send(message::NetworkMessage::GetHeaders(gh)).await?;
-            eprintln!("[p2p]     GetHeaders sent (version=70012, {} locators)", self.last_locator.len());
+            eprintln!("[p2p]     GetHeaders sent (version={}, {} locators)", ADVERTISED_PROTO, self.last_locator.len());
         }
         Ok(())
     }
