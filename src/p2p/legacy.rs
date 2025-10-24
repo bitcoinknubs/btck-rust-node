@@ -14,7 +14,10 @@ use bitcoin::p2p::{
 use bitcoin::{BlockHash, Network};
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Read as StdRead, Write as StdWrite};
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,7 +35,7 @@ const ADVERTISED_PROTO: u32 = 70016;
 const HDRS_TIMEOUT: Duration = Duration::from_secs(60);
 const BLK_TIMEOUT: Duration = Duration::from_secs(120);
 const STALL_LIMIT: Duration = Duration::from_secs(15 * 60);
-const REREQ_SECS: u64 = 30;  // Bitcoin Core: longer timeout to avoid duplicate requests during normal operation
+const REREQ_SECS: u64 = 2;  // Fast re-request for headers (Bitcoin Core: immediate, we use 2s fallback)
 const MAX_HEADERS_PER_MSG: usize = 2000;
 
 // 전역/피어별 인플라이트 제한
@@ -276,6 +279,7 @@ pub struct PeerManager {
     peer_heights: HashMap<SocketAddr, i32>,     // 각 피어의 start_height
     best_known_height: i32,                     // 네트워크의 최고 높이
     header_chain_height: i32,                   // 현재 헤더 체인의 높이
+    header_chain: Vec<BlockHeader>,             // 실제 헤더 체인 (디스크에 저장됨)
     sync_peer: Option<SocketAddr>,              // Bitcoin Core: ONE headers sync peer
 
     // Bitcoin Core-style chain parameters
@@ -288,6 +292,87 @@ pub struct PeerManager {
 impl PeerManager {
     pub fn new(net: Network, user_agent: &str) -> Self {
         Self::with_start_height(net, user_agent, 0)
+    }
+
+    /// Get the path to the headers storage file
+    fn get_headers_file_path(net: Network) -> PathBuf {
+        let filename = match net {
+            Network::Bitcoin => "headers_mainnet.dat",
+            Network::Testnet => "headers_testnet.dat",
+            Network::Signet => "headers_signet.dat",
+            Network::Regtest => "headers_regtest.dat",
+            _ => "headers_unknown.dat",
+        };
+        PathBuf::from(filename)
+    }
+
+    /// Load headers from disk (genesis not included, starts from height 1)
+    fn load_headers_from_disk(net: Network) -> Result<Vec<BlockHeader>> {
+        let path = Self::get_headers_file_path(net);
+
+        if !path.exists() {
+            eprintln!("[p2p] No saved headers file found at {:?}", path);
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(&path)?;
+        let mut reader = BufReader::new(file);
+        let mut headers = Vec::new();
+        let mut buffer = vec![0u8; 80]; // BlockHeader is 80 bytes
+
+        loop {
+            match reader.read_exact(&mut buffer) {
+                Ok(()) => {
+                    let header: BlockHeader = encode::deserialize(&buffer)?;
+                    headers.push(header);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    // End of file reached
+                    break;
+                }
+                Err(e) => return Err(anyhow!("Failed to read header: {}", e)),
+            }
+        }
+
+        eprintln!("[p2p] ✓ Loaded {} headers from disk ({:?})", headers.len(), path);
+        Ok(headers)
+    }
+
+    /// Save all headers to disk (genesis not included, starts from height 1)
+    fn save_headers_to_disk(&self) -> Result<()> {
+        let path = Self::get_headers_file_path(self.net);
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
+        let mut writer = BufWriter::new(file);
+
+        for header in &self.header_chain {
+            let bytes = encode::serialize(header);
+            writer.write_all(&bytes)?;
+        }
+
+        writer.flush()?;
+        eprintln!("[p2p] ✓ Saved {} headers to disk ({:?})", self.header_chain.len(), path);
+        Ok(())
+    }
+
+    /// Append a single header to the disk file (incremental save)
+    fn append_header_to_disk(&self, header: &BlockHeader) -> Result<()> {
+        let path = Self::get_headers_file_path(self.net);
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let mut writer = BufWriter::new(file);
+
+        let bytes = encode::serialize(header);
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+
+        Ok(())
     }
 
     pub fn with_start_height(net: Network, user_agent: &str, start_height: i32) -> Self {
@@ -305,15 +390,45 @@ impl PeerManager {
             eprintln!("[p2p] AssumeValid: {}", av);
         }
 
-        // If we have blocks stored (start_height > 0), we already have headers
-        // Skip header sync and go straight to block download
-        let headers_already_synced = start_height > 0;
-        let initial_header_height = start_height;
+        // Load saved headers from disk
+        let loaded_headers = Self::load_headers_from_disk(net).unwrap_or_else(|e| {
+            eprintln!("[p2p] ⚠️  Failed to load headers from disk: {}", e);
+            Vec::new()
+        });
 
-        if headers_already_synced {
-            eprintln!("[p2p] 🔄 Resuming from saved state:");
-            eprintln!("[p2p]    Blocks already downloaded: {}", start_height);
-            eprintln!("[p2p]    Skipping header sync - will resume block download");
+        // Build header chain state from loaded headers
+        let mut prev_map = HashMap::new();
+        let mut recent_chain = vec![g];
+        let mut prev_hash = g;
+
+        for header in &loaded_headers {
+            let h = header.block_hash();
+            have.insert(h);
+            prev_map.insert(h, header.prev_blockhash);
+            recent_chain.push(h);
+            prev_hash = h;
+        }
+
+        let header_chain_height = loaded_headers.len() as i32;
+        let best_header_tip = prev_hash;
+
+        // Determine if headers are synced
+        // Headers are synced if we have headers loaded OR if we have blocks
+        let headers_already_synced = header_chain_height >= start_height && start_height > 0;
+
+        if loaded_headers.is_empty() {
+            eprintln!("[p2p] 🆕 Starting fresh sync from genesis");
+        } else {
+            eprintln!("[p2p] 🔄 Resuming from saved headers:");
+            eprintln!("[p2p]    Headers loaded: {} (height: {})", loaded_headers.len(), header_chain_height);
+            eprintln!("[p2p]    Blocks downloaded: {}", start_height);
+            eprintln!("[p2p]    Best header tip: {}", best_header_tip);
+
+            if headers_already_synced {
+                eprintln!("[p2p]    ✓ Headers synced - will download remaining blocks");
+            } else if header_chain_height > 0 {
+                eprintln!("[p2p]    ⏩ Will continue header sync from height {}", header_chain_height);
+            }
         }
 
         Self {
@@ -321,16 +436,17 @@ impl PeerManager {
             user_agent: user_agent.into(),
             peers: HashMap::new(),
             downloader: Downloader::new(GLOBAL_INFLIGHT, PER_PEER_INFLIGHT),
-            prev_map: HashMap::new(),
+            prev_map,
             have_header: have,
-            best_header_tip: g,
-            recent_chain: vec![g],
+            best_header_tip,
+            recent_chain,
             last_locator: vec![g],
             start_height,
-            headers_synced: headers_already_synced,  // Skip header sync if we have blocks
+            headers_synced: headers_already_synced,
             peer_heights: HashMap::new(),
             best_known_height: 0,
-            header_chain_height: initial_header_height,  // Resume from saved height
+            header_chain_height,
+            header_chain: loaded_headers,
             sync_peer: None,
             chain_params,
             on_block: None,
@@ -582,9 +698,15 @@ impl PeerManager {
             self.prev_map.insert(h, hh.prev_blockhash);
             self.have_header.insert(h);
             self.recent_chain.push(h);
+            self.header_chain.push(hh.clone());  // Store actual header
             self.header_chain_height += 1;
             processing_tip = h;  // Update tip for next header
             added_count += 1;
+
+            // Incrementally append to disk for persistence
+            if let Err(e) = self.append_header_to_disk(hh) {
+                eprintln!("[p2p] ⚠️  Failed to save header to disk: {}", e);
+            }
 
             if idx < 5 || idx >= new_headers.len() - 3 {
                 eprintln!("[p2p]   [{}] ADDED: {} (prev={}, height={})",
@@ -930,25 +1052,25 @@ impl PeerManager {
             }
 
             // Initial and periodic header requests - Bitcoin Core: sync peer only
-            // Send initial request after 1 second, then re-request every 30 seconds if no response
-            // This serves as a fallback if headers sync stalls
+            // Send initial request after 1 second, then re-request every 2 seconds if no response
+            // This serves as a fallback if headers sync stalls (Bitcoin Core: immediate re-request, we use 2s)
             if !self.headers_synced {
                 if let Some(sync_addr) = self.sync_peer {
                     if self.peers.contains_key(&sync_addr) {
                         let elapsed = tokio::time::Instant::now().duration_since(last_headers_ts);
-                        // Initial request after 1s, subsequent requests every 30s (fallback only)
+                        // Initial request after 1s, subsequent requests every 2s (fast fallback for headers)
                         let should_request = if self.header_chain_height == 0 {
                             elapsed > Duration::from_secs(1)  // Initial: 1 second delay
                         } else {
-                            elapsed > Duration::from_secs(REREQ_SECS)  // Re-requests: 30 seconds (fallback)
+                            elapsed > Duration::from_secs(REREQ_SECS)  // Re-requests: 2 seconds (fast fallback for headers)
                         };
 
                         if should_request {
                             if self.header_chain_height == 0 {
                                 eprintln!("[p2p] Initial headers request to sync peer {}", sync_addr);
                             } else {
-                                eprintln!("[p2p] ⏱️  Fallback re-request (30s timeout) to sync peer {}", sync_addr);
-                                eprintln!("[p2p]     This indicates headers sync may be stalled");
+                                eprintln!("[p2p] ⏱️  Fallback re-request ({}s timeout) to sync peer {}", REREQ_SECS, sync_addr);
+                                eprintln!("[p2p]     Continuing headers sync from height {}", self.header_chain_height);
                             }
                             let _ = self.request_headers(sync_addr).await;
                             last_headers_ts = tokio::time::Instant::now();
