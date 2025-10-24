@@ -180,6 +180,9 @@ pub struct Downloader {
     global_window: usize,
     per_peer_window: usize,
     queue: VecDeque<BlockHash>,
+    // Track download progress
+    total_blocks: usize,        // Total blocks to download
+    downloaded_blocks: usize,   // Blocks completed
 }
 impl Downloader {
     pub fn new(global_window: usize, per_peer_window: usize) -> Self {
@@ -189,10 +192,23 @@ impl Downloader {
             global_window,
             per_peer_window,
             queue: VecDeque::new(),
+            total_blocks: 0,
+            downloaded_blocks: 0,
         }
     }
     pub fn push_many(&mut self, v: impl IntoIterator<Item = BlockHash>) {
-        for h in v { self.queue.push_back(h); }
+        for h in v {
+            self.queue.push_back(h);
+            self.total_blocks += 1;
+        }
+    }
+    pub fn get_progress(&self) -> (usize, usize, f64) {
+        let percentage = if self.total_blocks > 0 {
+            (self.downloaded_blocks as f64 / self.total_blocks as f64) * 100.0
+        } else {
+            0.0
+        };
+        (self.downloaded_blocks, self.total_blocks, percentage)
     }
     pub fn poll_assign(&mut self, addr: SocketAddr) -> Vec<BlockHash> {
         let mut out = vec![];
@@ -216,6 +232,7 @@ impl Downloader {
             if let Some(n) = self.per_peer.get_mut(&addr) {
                 if *n > 0 { *n -= 1; }
             }
+            self.downloaded_blocks += 1;  // Increment completed counter
         }
     }
     pub fn reassign_timeouts(&mut self) -> Vec<BlockHash> {
@@ -288,6 +305,17 @@ impl PeerManager {
             eprintln!("[p2p] AssumeValid: {}", av);
         }
 
+        // If we have blocks stored (start_height > 0), we already have headers
+        // Skip header sync and go straight to block download
+        let headers_already_synced = start_height > 0;
+        let initial_header_height = start_height;
+
+        if headers_already_synced {
+            eprintln!("[p2p] 🔄 Resuming from saved state:");
+            eprintln!("[p2p]    Blocks already downloaded: {}", start_height);
+            eprintln!("[p2p]    Skipping header sync - will resume block download");
+        }
+
         Self {
             net,
             user_agent: user_agent.into(),
@@ -299,10 +327,10 @@ impl PeerManager {
             recent_chain: vec![g],
             last_locator: vec![g],
             start_height,
-            headers_synced: false,
+            headers_synced: headers_already_synced,  // Skip header sync if we have blocks
             peer_heights: HashMap::new(),
             best_known_height: 0,
-            header_chain_height: 0,
+            header_chain_height: initial_header_height,  // Resume from saved height
             sync_peer: None,
             chain_params,
             on_block: None,
@@ -802,7 +830,6 @@ impl PeerManager {
                         }
                         message::NetworkMessage::Block(b) => {
                             let h = b.block_hash();
-                            eprintln!("[p2p] block: {h}");
 
                             // Bitcoin Core 방식: 헤더 동기화 완료 후에만 블록 처리
                             if !self.headers_synced {
@@ -813,6 +840,17 @@ impl PeerManager {
                             // 네트워크 루프는 즉시 다음으로 진행:
                             // 1) inflight에서 제거하고
                             self.downloader.complete(&h);
+
+                            // Show progress (every block or every 100 blocks)
+                            let (downloaded, total, percentage) = self.downloader.get_progress();
+                            if downloaded % 100 == 0 || downloaded == total {
+                                eprintln!("[p2p] 📦 Block download progress: {:.1}% ({}/{} blocks)",
+                                         percentage, downloaded, total);
+                                eprintln!("[p2p]    Latest block: {}", h);
+                            } else {
+                                eprintln!("[p2p] 📦 Downloaded block {}/{} ({:.1}%): {}",
+                                         downloaded, total, percentage, h);
+                            }
 
                             // 2) 다음 할당을 만들어 보냄
                             let assign = self.downloader.poll_assign(addr);
