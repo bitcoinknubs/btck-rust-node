@@ -331,6 +331,7 @@ impl PeerManager {
 
         // 피어의 높이를 추적
         let peer_height = p.their_start_height;
+        let peer_services = p.their_services;
         self.peer_heights.insert(addr, peer_height);
 
         // 네트워크의 최고 높이 갱신
@@ -341,12 +342,37 @@ impl PeerManager {
 
         self.peers.insert(addr, p);
 
-        // Bitcoin Core 방식: ONE sync peer만 선택
-        // Headers-First: 첫 번째 피어를 sync peer로 선택
-        // Don't request headers here - let event loop handle it after peer is fully integrated
-        if !self.headers_synced && self.sync_peer.is_none() {
-            self.sync_peer = Some(addr);
-            eprintln!("[p2p] ⭐ Selected {} as HEADERS SYNC PEER", addr);
+        // CRITICAL FIX: Select sync peer that can actually serve headers!
+        // Bitcoin Core: Choose a peer that:
+        // 1. Advertises NODE_NETWORK (willing to serve full data)
+        // 2. Has height > 0 (actually has headers to share)
+        // 3. Preferably the one with highest height
+        if !self.headers_synced {
+            let has_network_service = peer_services.has(p2p::ServiceFlags::NETWORK);
+            let has_headers = peer_height > 0;
+
+            if has_network_service && has_headers {
+                // Check if we should replace current sync peer with a better one
+                let should_select = if let Some(current_sync) = self.sync_peer {
+                    // Replace if new peer has more headers
+                    if let Some(&current_height) = self.peer_heights.get(&current_sync) {
+                        peer_height > current_height
+                    } else {
+                        true  // Current sync peer not found, replace
+                    }
+                } else {
+                    true  // No sync peer yet, select this one
+                };
+
+                if should_select {
+                    self.sync_peer = Some(addr);
+                    eprintln!("[p2p] ⭐ Selected {} as HEADERS SYNC PEER (height={}, services={:?})",
+                             addr, peer_height, peer_services);
+                }
+            } else {
+                eprintln!("[p2p] ⚠️  Peer {} not suitable for sync (network={}, height={})",
+                         addr, has_network_service, peer_height);
+            }
         }
         Ok(())
     }
@@ -421,16 +447,16 @@ impl PeerManager {
             eprintln!("[p2p]       ... and {} more", self.last_locator.len() - 5);
         }
 
-        // Use protocol version 70012 (BIP 130 - SendHeaders) for better compatibility
-        // Some peers may not respond correctly to version 70016
+        // Use same protocol version as advertised in Version message
+        // GetHeaders version should match our advertised protocol version
         let gh = msg_blk::GetHeadersMessage {
-            version: 70012,
+            version: ADVERTISED_PROTO,
             locator_hashes: self.last_locator.clone(),
             stop_hash: BlockHash::from_raw_hash(sha256d::Hash::all_zeros()),
         };
         if let Some(p) = self.peers.get_mut(&to) {
             p.send(message::NetworkMessage::GetHeaders(gh)).await?;
-            eprintln!("[p2p]     GetHeaders sent (version=70012, {} locators)", self.last_locator.len());
+            eprintln!("[p2p]     GetHeaders sent (version={}, {} locators)", ADVERTISED_PROTO, self.last_locator.len());
         }
         Ok(())
     }
@@ -767,6 +793,15 @@ impl PeerManager {
                             let _ = self.request_headers(sync_addr).await;
                             last_headers_ts = tokio::time::Instant::now();
                         }
+                    }
+                } else if self.peers.len() < 3 {
+                    // No sync peer found yet - try connecting to more peers
+                    // Only do this if we have few peers (to avoid spam)
+                    let elapsed = tokio::time::Instant::now().duration_since(last_headers_ts);
+                    if elapsed > Duration::from_secs(10) {
+                        eprintln!("[p2p] No suitable sync peer found yet, connecting to more peers...");
+                        let _ = self.bootstrap().await;
+                        last_headers_ts = tokio::time::Instant::now();
                     }
                 }
             }
