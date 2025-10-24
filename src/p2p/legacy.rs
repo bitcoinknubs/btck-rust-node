@@ -468,27 +468,45 @@ impl PeerManager {
 
     /// 새 헤더 확장 (Bitcoin Core 방식 - 헤더만 처리)
     fn extend_headers(&mut self, new_headers: &[BlockHeader]) {
+        if new_headers.is_empty() {
+            return;
+        }
+
+        // Bitcoin Core behavior: Process headers sequentially
+        // 1. Skip headers we already have
+        // 2. Add new headers that connect to our chain
+        // 3. Verify each header connects to the previous one
+
+        let mut added_count = 0;
         for hh in new_headers {
             let h = hh.block_hash();
+
+            // Skip if we already have this header
+            if self.have_header.contains(&h) {
+                continue;
+            }
+
+            // Add to our maps
             self.prev_map.insert(h, hh.prev_blockhash);
             self.have_header.insert(h);
-            if *self.recent_chain.last().unwrap_or(&h) == hh.prev_blockhash {
+
+            // Check if this header connects to our main chain
+            // It connects if its prev_blockhash is the current tip
+            if *self.recent_chain.last().unwrap() == hh.prev_blockhash {
                 self.recent_chain.push(h);
-                self.header_chain_height += 1;  // 헤더 체인 높이 증가
+                self.header_chain_height += 1;
+                added_count += 1;
             }
         }
 
-        // 가장 긴 체인 찾기
-        loop {
-            let tip = self.best_header_tip;
-            let next = self.prev_map.iter()
-                .find_map(|(child, prev)| if *prev == tip { Some(*child) } else { None });
-            match next {
-                Some(nh) => {
-                    self.best_header_tip = nh;
-                }
-                None => break,
-            }
+        if added_count > 0 {
+            eprintln!("[p2p] Added {} new headers to chain (height now: {})",
+                     added_count, self.header_chain_height);
+        }
+
+        // Update best_header_tip to the latest in recent_chain
+        if let Some(&tip) = self.recent_chain.last() {
+            self.best_header_tip = tip;
         }
     }
 
