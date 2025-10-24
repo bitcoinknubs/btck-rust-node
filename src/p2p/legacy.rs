@@ -421,14 +421,16 @@ impl PeerManager {
             eprintln!("[p2p]       ... and {} more", self.last_locator.len() - 5);
         }
 
+        // Use protocol version 70012 (BIP 130 - SendHeaders) for better compatibility
+        // Some peers may not respond correctly to version 70016
         let gh = msg_blk::GetHeadersMessage {
-            version: ADVERTISED_PROTO,
+            version: 70012,
             locator_hashes: self.last_locator.clone(),
             stop_hash: BlockHash::from_raw_hash(sha256d::Hash::all_zeros()),
         };
         if let Some(p) = self.peers.get_mut(&to) {
             p.send(message::NetworkMessage::GetHeaders(gh)).await?;
-            eprintln!("[p2p]     GetHeaders message sent successfully");
+            eprintln!("[p2p]     GetHeaders sent (version=70012, {} locators)", self.last_locator.len());
         }
         Ok(())
     }
@@ -554,7 +556,13 @@ impl PeerManager {
                 let maybe = match timeout(recv_timeout, p.recv()).await {
                     Ok(Ok(m)) => Some(m),
                     Ok(Err(e)) => {
-                        eprintln!("[p2p] recv error from {addr}: {e:#}; dropping peer");
+                        // Enhanced error logging to understand disconnection reasons
+                        let err_str = format!("{:#}", e);
+                        if err_str.contains("early eof") || err_str.contains("EOF") {
+                            eprintln!("[p2p] ⚠️  Peer {addr} disconnected (early eof) - may indicate peer rejected us or timed out");
+                        } else {
+                            eprintln!("[p2p] ⚠️  recv error from {addr}: {} - dropping peer", err_str);
+                        }
                         self.peers.remove(&addr);
                         continue;
                     }
