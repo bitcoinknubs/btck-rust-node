@@ -35,7 +35,8 @@ const ADVERTISED_PROTO: u32 = 70016;
 const HDRS_TIMEOUT: Duration = Duration::from_secs(60);
 const BLK_TIMEOUT: Duration = Duration::from_secs(120);
 const STALL_LIMIT: Duration = Duration::from_secs(15 * 60);
-const REREQ_SECS: u64 = 2;  // Fast re-request for headers (Bitcoin Core: immediate, we use 2s fallback)
+const INITIAL_REREQ_SECS: u64 = 2;      // Initial request: 2 seconds
+const IMMEDIATE_REQ_TIMEOUT: u64 = 60;  // After immediate request on full batch: 60 seconds (give peer time to respond)
 const MAX_HEADERS_PER_MSG: usize = 2000;
 
 // 전역/피어별 인플라이트 제한
@@ -873,10 +874,12 @@ impl PeerManager {
                                 // CRITICAL FIX: Only request more headers if we ADDED headers and batch was full
                                 // Bitcoin Core: Don't loop if we're not making progress!
                                 if h.len() == MAX_HEADERS_PER_MSG && added > 0 {
-                                    eprintln!("[p2p] ✓ Made progress ({} added), requesting next batch...", added);
+                                    eprintln!("[p2p] ✓ Made progress ({} added), requesting next batch immediately...", added);
                                     let _ = self.request_headers(addr).await;
-                                    // CRITICAL: Update timestamp to prevent timer-based duplicate request
-                                    last_headers_ts = tokio::time::Instant::now();
+                                    // CRITICAL: Set timestamp far in future to prevent fallback re-request
+                                    // We just sent immediate request, give peer 60s to respond before fallback
+                                    last_headers_ts = tokio::time::Instant::now() + Duration::from_secs(IMMEDIATE_REQ_TIMEOUT - INITIAL_REREQ_SECS);
+                                    eprintln!("[p2p] ⏸️  Waiting {}s for peer response (no fallback re-request)", IMMEDIATE_REQ_TIMEOUT);
                                 } else if h.len() == MAX_HEADERS_PER_MSG && added == 0 {
                                     eprintln!("[p2p] ⚠️  Full batch received but NO headers added! Stopping to avoid infinite loop.");
                                     eprintln!("[p2p]     This indicates a chain mismatch or duplicate batch.");
@@ -1053,23 +1056,23 @@ impl PeerManager {
 
             // Initial and periodic header requests - Bitcoin Core: sync peer only
             // Send initial request after 1 second, then re-request every 2 seconds if no response
-            // This serves as a fallback if headers sync stalls (Bitcoin Core: immediate re-request, we use 2s)
+            // BUT: After immediate request (on full batch), wait 60 seconds before fallback
             if !self.headers_synced {
                 if let Some(sync_addr) = self.sync_peer {
                     if self.peers.contains_key(&sync_addr) {
                         let elapsed = tokio::time::Instant::now().duration_since(last_headers_ts);
-                        // Initial request after 1s, subsequent requests every 2s (fast fallback for headers)
+                        // Initial request after 1s, fallback requests every 2s
                         let should_request = if self.header_chain_height == 0 {
                             elapsed > Duration::from_secs(1)  // Initial: 1 second delay
                         } else {
-                            elapsed > Duration::from_secs(REREQ_SECS)  // Re-requests: 2 seconds (fast fallback for headers)
+                            elapsed > Duration::from_secs(INITIAL_REREQ_SECS)  // Fallback: 2 seconds
                         };
 
                         if should_request {
                             if self.header_chain_height == 0 {
                                 eprintln!("[p2p] Initial headers request to sync peer {}", sync_addr);
                             } else {
-                                eprintln!("[p2p] ⏱️  Fallback re-request ({}s timeout) to sync peer {}", REREQ_SECS, sync_addr);
+                                eprintln!("[p2p] ⏱️  Fallback re-request ({}s timeout) to sync peer {}", INITIAL_REREQ_SECS, sync_addr);
                                 eprintln!("[p2p]     Continuing headers sync from height {}", self.header_chain_height);
                             }
                             let _ = self.request_headers(sync_addr).await;
