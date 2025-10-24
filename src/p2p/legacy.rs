@@ -22,6 +22,7 @@ use tokio::net::{lookup_host, TcpStream};
 use tokio::time::{sleep, timeout};
 use tokio::task::spawn_blocking;
 
+use crate::chainparams::ChainParams;
 use crate::seeds;
 
 /// 광고할 프로토콜 번호(현대 피어 경로를 열기 위해 70016 사용)
@@ -260,6 +261,9 @@ pub struct PeerManager {
     header_chain_height: i32,                   // 현재 헤더 체인의 높이
     sync_peer: Option<SocketAddr>,              // Bitcoin Core: ONE headers sync peer
 
+    // Bitcoin Core-style chain parameters
+    chain_params: ChainParams,                  // Checkpoints, AssumeValid, MinimumChainWork
+
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
     on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
 }
@@ -274,8 +278,15 @@ impl PeerManager {
         let mut have = HashSet::new();
         have.insert(g);
 
+        let chain_params = ChainParams::for_network(net);
+
         eprintln!("[p2p] Initializing PeerManager with start_height={}", start_height);
         eprintln!("[p2p] Starting in HEADERS-FIRST SYNC mode");
+        eprintln!("[p2p] Network: {:?}", net);
+        eprintln!("[p2p] Checkpoints loaded: {}", chain_params.checkpoints.len());
+        if let Some(ref av) = chain_params.assume_valid {
+            eprintln!("[p2p] AssumeValid: {}", av);
+        }
 
         Self {
             net,
@@ -293,6 +304,7 @@ impl PeerManager {
             best_known_height: 0,
             header_chain_height: 0,
             sync_peer: None,
+            chain_params,
             on_block: None,
             on_tx: None,
         }
@@ -521,6 +533,21 @@ impl PeerManager {
                 eprintln!("[p2p]     Expected prev={}, got prev={}", processing_tip, hh.prev_blockhash);
                 eprintln!("[p2p]     Header hash={}, height would be {}", h, self.header_chain_height + 1);
                 break;
+            }
+
+            // Check if this is a checkpoint height - Bitcoin Core style validation
+            let next_height = (self.header_chain_height + 1) as u32;
+            if let Some(checkpoint_hash) = self.chain_params.get_checkpoint(next_height) {
+                if h != checkpoint_hash {
+                    eprintln!("[p2p] ❌ CHECKPOINT MISMATCH at height {}!", next_height);
+                    eprintln!("[p2p]    Expected: {}", checkpoint_hash);
+                    eprintln!("[p2p]    Received: {}", h);
+                    eprintln!("[p2p]    This peer is on a different chain - rejecting!");
+                    // Don't add any more headers from this batch
+                    break;
+                } else {
+                    eprintln!("[p2p] ✓ Checkpoint verified at height {}: {}", next_height, h);
+                }
             }
 
             // Add to our chain
