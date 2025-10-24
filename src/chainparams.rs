@@ -109,26 +109,16 @@ impl ChainParams {
     }
 
     /// Bitcoin signet parameters
+    /// Note: Signet is a test network and doesn't require checkpoints
+    /// The chain can be reset/forked, so we don't enforce specific block hashes
     fn signet() -> Self {
         Self {
-            // Signet has fewer checkpoints (smaller chain)
-            checkpoints: &[
-                (25000, "00000086d6b2636cb2a392d45edc4ec544a10024d30141c9adf4bfd9de533b53"),
-                (50000, "000000e53b496f7cda1f6bdb0a5c078d27dc19b1b79c2df8285825871a9d5795"),
-                (100000, "0000014086ddfe6836bd52179c2ce1ce5eb8a9b85aee87c18be05c605723793c"),
-                (150000, "000001216527958dfd615e94b6ff828c2fd313e272a56cf96fd5fe885cb3277d"),
-                (200000, "000000d86368960eddbf7e127f8ba93a56efe71420b5dd8dbf8b0a68fa9ebbd1"),
-                (250000, "0000012266eea4abfed65443207fb83876ecf6dd3f8860a249b25827afe03689"),
-            ],
-            // Signet doesn't use AssumeValid in the same way
+            // No checkpoints for Signet (test network, can be reset)
+            checkpoints: &[],
+            // Signet doesn't use AssumeValid
             assume_valid: None,
-            // Signet has very low difficulty
-            minimum_chain_work: Some([
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x69, 0x50,
-            ]),
+            // Signet has very low difficulty, no minimum work requirement
+            minimum_chain_work: None,
         }
     }
 
