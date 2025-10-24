@@ -314,9 +314,15 @@ impl PeerManager {
         if self.peers.contains_key(&addr) { return Ok(()); }
         let mut p = Peer::connect(addr, self.net).await?;
 
-        // EXPERIMENTAL: Try advertising NETWORK during IBD
-        // Signet peers might require this (unlike mainnet Bitcoin Core behavior)
-        let our_services = p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS;
+        // CRITICAL: Don't advertise NETWORK during IBD!
+        // If we advertise NETWORK, peers expect us to have headers
+        // When we only have genesis, they think we're broken and disconnect
+        // Only advertise WITNESS during IBD
+        let our_services = if self.headers_synced {
+            p2p::ServiceFlags::NETWORK | p2p::ServiceFlags::WITNESS
+        } else {
+            p2p::ServiceFlags::WITNESS  // IBD: Only WITNESS, no NETWORK
+        };
 
         // CRITICAL: Use self.start_height, not a parameter
         // start_height represents OUR current blockchain height (blocks we have)
@@ -496,26 +502,24 @@ impl PeerManager {
     async fn respond_getheaders(&mut self, from: SocketAddr, req: &msg_blk::GetHeadersMessage) -> Result<()> {
         eprintln!("[p2p] <<< Peer {from} requested headers with {} locators", req.locator_hashes.len());
 
-        // CRITICAL FIX: Must send at least genesis block header
-        // Sending completely empty Headers causes peers to disconnect!
-        // Bitcoin Core always has genesis and responds with headers it knows
-        let mut headers_response: Vec<BlockHeader> = Vec::new();
-
-        // During IBD, we only have genesis block - send that
-        // This keeps peers happy and maintains connection
-        if !self.headers_synced {
-            let genesis = genesis_block(self.net);
-            headers_response.push(genesis.header);
-            eprintln!("[p2p]     >>> Sent genesis header (IBD in progress - only have genesis)");
-        }
+        // Bitcoin Core behavior: Send headers we have after the common ancestor
+        // During IBD: we only have genesis, and peer also has genesis (common ancestor)
+        // So we send empty list (no headers after genesis that we know of)
+        // This is CORRECT behavior - we're not advertising NODE_NETWORK during IBD
+        let headers_response: Vec<BlockHeader> = Vec::new();
 
         if let Some(p) = self.peers.get_mut(&from) {
             p.send(message::NetworkMessage::Headers(headers_response)).await?;
+            if !self.headers_synced {
+                eprintln!("[p2p]     >>> Sent empty Headers (IBD - no headers beyond genesis yet)");
+            } else {
+                eprintln!("[p2p]     >>> Sent empty Headers response");
+            }
         }
 
         // Note: In the future, when we have more headers:
         // 1. Find the common ancestor from req.locator_hashes
-        // 2. Send up to 2000 headers starting from that point
+        // 2. Send up to 2000 headers starting AFTER that point
 
         Ok(())
     }
