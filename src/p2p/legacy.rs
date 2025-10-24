@@ -417,25 +417,38 @@ impl PeerManager {
         Ok(connected)
     }
 
-    /// Core 유사 지수 백트래킹 로케이터(간소화)
+    /// Bitcoin Core-style exponential backoff block locator
     fn build_locator(&self) -> Vec<BlockHash> {
-        let mut step = 1usize;
-        let mut count = 0usize;
         let mut loc = Vec::with_capacity(32);
+        let mut step = 1usize;
         let mut idx = self.recent_chain.len().saturating_sub(1);
 
-        while count < 32 {
+        // Bitcoin Core: Add hashes with exponential backoff
+        // First 10: step=1, then step doubles: 2,4,8,16,32...
+        while loc.len() < 32 {
             loc.push(self.recent_chain[idx]);
-            if idx == 0 { break; }
 
-            let next_idx = idx.saturating_sub(step);
-            idx = next_idx;
-            count += 1;
-            if loc.len() > 10 { step = step.saturating_mul(2).min(self.recent_chain.len()); }
+            if idx == 0 {
+                break;  // Reached genesis
+            }
+
+            // Exponentially larger steps back, starting after first 10 elements
+            if loc.len() >= 10 {
+                step *= 2;
+            }
+
+            // Walk back by 'step' blocks
+            idx = idx.saturating_sub(step);
         }
-        if *loc.last().unwrap_or(&self.recent_chain[0]) != self.recent_chain[0] {
+
+        // Always ensure genesis is included (Bitcoin Core does this)
+        if *loc.last().unwrap() != self.recent_chain[0] {
             loc.push(self.recent_chain[0]);
         }
+
+        eprintln!("[p2p] Built locator from height {} with {} hashes: [{}, ...]",
+                 self.header_chain_height, loc.len(), loc[0]);
+
         loc
     }
 
@@ -467,81 +480,77 @@ impl PeerManager {
     }
 
     /// 새 헤더 확장 (Bitcoin Core 방식 - 헤더만 처리)
-    fn extend_headers(&mut self, new_headers: &[BlockHeader]) {
+    /// Returns the number of new headers actually added
+    fn extend_headers(&mut self, new_headers: &[BlockHeader]) -> usize {
         if new_headers.is_empty() {
-            return;
+            return 0;
         }
 
-        // Bitcoin Core behavior: Process headers sequentially
-        // Find the connection point and add headers from there
+        // Bitcoin Core behavior: Find first new header and add from there
+        // Process headers sequentially, verify connections
 
-        let mut start_idx = None;
+        let mut added_count = 0;
+        let mut duplicate_count = 0;
+        let current_tip = *self.recent_chain.last().unwrap();
+        let mut processing_tip = current_tip;
 
-        // Find where these headers connect to our chain
-        for (i, hh) in new_headers.iter().enumerate() {
+        // Debug: Show range of received headers
+        let first_hash = new_headers[0].block_hash();
+        let last_hash = new_headers[new_headers.len() - 1].block_hash();
+        eprintln!("[p2p] Processing {} headers: first={}, last={}, current_tip={}",
+                 new_headers.len(), first_hash, last_hash, current_tip);
+
+        for (idx, hh) in new_headers.iter().enumerate() {
             let h = hh.block_hash();
 
-            // Skip headers we already have in our main chain
+            // Skip if we already have this header
             if self.have_header.contains(&h) {
-                // Check if this is in our recent_chain
-                if self.recent_chain.contains(&h) {
-                    // This header is in our chain, continue from next one
-                    start_idx = Some(i + 1);
-                    continue;
+                duplicate_count += 1;
+                // Update processing_tip to this header (it's in our chain)
+                processing_tip = h;
+                if idx < 5 || idx >= new_headers.len() - 3 {
+                    eprintln!("[p2p]   [{}] DUPLICATE: {} (prev={})",
+                             idx, h, hh.prev_blockhash);
                 }
+                continue;
             }
 
-            // Check if this header connects to our chain tip
-            if *self.recent_chain.last().unwrap() == hh.prev_blockhash {
-                start_idx = Some(i);
+            // This is a NEW header - check if it connects
+            if hh.prev_blockhash != processing_tip {
+                eprintln!("[p2p] ⚠️  Header chain break at index {}!", idx);
+                eprintln!("[p2p]     Expected prev={}, got prev={}", processing_tip, hh.prev_blockhash);
+                eprintln!("[p2p]     Header hash={}, height would be {}", h, self.header_chain_height + 1);
                 break;
+            }
+
+            // Add to our chain
+            self.prev_map.insert(h, hh.prev_blockhash);
+            self.have_header.insert(h);
+            self.recent_chain.push(h);
+            self.header_chain_height += 1;
+            processing_tip = h;  // Update tip for next header
+            added_count += 1;
+
+            if idx < 5 || idx >= new_headers.len() - 3 {
+                eprintln!("[p2p]   [{}] ADDED: {} (prev={}, height={})",
+                         idx, h, hh.prev_blockhash, self.header_chain_height);
             }
         }
 
-        // If we found a connection point, add headers from there
-        if let Some(start) = start_idx {
-            if start >= new_headers.len() {
-                // No new headers to add
-                return;
-            }
-
-            let mut added_count = 0;
-            for hh in &new_headers[start..] {
-                let h = hh.block_hash();
-
-                // Skip if we already have this header in our chain
-                if self.have_header.contains(&h) {
-                    continue;
-                }
-
-                // Verify this header connects to the previous one
-                if *self.recent_chain.last().unwrap() != hh.prev_blockhash {
-                    eprintln!("[p2p] ⚠️  Header chain break detected! Stopping at height {}",
-                             self.header_chain_height);
-                    break;
-                }
-
-                // Add to our chain
-                self.prev_map.insert(h, hh.prev_blockhash);
-                self.have_header.insert(h);
-                self.recent_chain.push(h);
-                self.header_chain_height += 1;
-                added_count += 1;
-            }
-
-            if added_count > 0 {
-                eprintln!("[p2p] Added {} new headers to chain (height now: {})",
-                         added_count, self.header_chain_height);
-            }
+        if added_count > 0 {
+            eprintln!("[p2p] ✓ Added {} new headers to chain (height now: {}, duplicates: {})",
+                     added_count, self.header_chain_height, duplicate_count);
         } else {
-            eprintln!("[p2p] ⚠️  Received {} headers but none connect to our chain (tip: {}, height: {})",
-                     new_headers.len(), self.recent_chain.last().unwrap(), self.header_chain_height);
+            eprintln!("[p2p] ✗ No headers added! (height remains: {}, duplicates: {})",
+                     self.header_chain_height, duplicate_count);
         }
 
         // Update best_header_tip to the latest in recent_chain
         if let Some(&tip) = self.recent_chain.last() {
             self.best_header_tip = tip;
         }
+
+        added_count
     }
 
     /// 헤더 동기화가 완료되었는지 확인 (Bitcoin Core 방식)
@@ -673,7 +682,7 @@ impl PeerManager {
                                 last_headers_ts = tokio::time::Instant::now();
 
                                 // Bitcoin Core 방식: 헤더만 처리
-                                self.extend_headers(&h);
+                                let added = self.extend_headers(&h);
 
                                 // 진행률 표시
                                 let progress = if self.best_known_height > 0 {
@@ -684,12 +693,35 @@ impl PeerManager {
                                 eprintln!("[p2p] Headers sync progress: {:.1}% ({}/{})",
                                          progress, self.header_chain_height, self.best_known_height);
 
-                                // 더 많은 헤더가 있으면 계속 요청
-                                if h.len() == MAX_HEADERS_PER_MSG {
-                                    eprintln!("[p2p] More headers available, requesting next batch...");
+                                // CRITICAL FIX: Only request more headers if we ADDED headers and batch was full
+                                // Bitcoin Core: Don't loop if we're not making progress!
+                                if h.len() == MAX_HEADERS_PER_MSG && added > 0 {
+                                    eprintln!("[p2p] ✓ Made progress ({} added), requesting next batch...", added);
                                     let _ = self.request_headers(addr).await;
+                                } else if h.len() == MAX_HEADERS_PER_MSG && added == 0 {
+                                    eprintln!("[p2p] ⚠️  Full batch received but NO headers added! Stopping to avoid infinite loop.");
+                                    eprintln!("[p2p]     This indicates a chain mismatch or duplicate batch.");
+                                    eprintln!("[p2p]     Will try different peer if available...");
+
+                                    // Bitcoin Core behavior: If stuck, try a different sync peer
+                                    self.sync_peer = None;  // Clear current sync peer
+
+                                    // Try to find a different peer with higher height
+                                    let other_peers: Vec<SocketAddr> = self.peers.keys()
+                                        .filter(|&&a| a != addr)
+                                        .copied()
+                                        .collect();
+
+                                    if !other_peers.is_empty() {
+                                        let new_peer = other_peers[0];
+                                        self.sync_peer = Some(new_peer);
+                                        eprintln!("[p2p] Switching to different sync peer: {}", new_peer);
+                                        let _ = self.request_headers(new_peer).await;
+                                    } else {
+                                        eprintln!("[p2p] No other peers available. Will wait for new connections.");
+                                    }
                                 } else {
-                                    eprintln!("[p2p] Header batch completed (received {} headers)", h.len());
+                                    eprintln!("[p2p] Header batch completed (received {} headers, added {})", h.len(), added);
                                     // 헤더 배치가 완료되었는지 확인
                                     self.check_headers_sync_complete();
 
