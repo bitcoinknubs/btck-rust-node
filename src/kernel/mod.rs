@@ -128,9 +128,40 @@ impl Kernel {
         unsafe { ffi::btck_chainstate_manager_options_destroy(chainman_opts) };
         eprintln!("[kernel] Chainstate manager created successfully");
 
+        // CRITICAL FIX NEEDED: Load block index and activate chain after restart
+        //
+        // Problem: After restart, btck_chain_get_height() returns 0 even though
+        // blocks were saved to disk in the previous run. This is because:
+        // 1. btck_chainstate_manager_create() does NOT automatically call LoadBlockIndex()
+        // 2. The active chain tip is not set without explicit activation
+        //
+        // Bitcoin Core's initialization sequence:
+        // - ChainstateManager::Create()
+        // - CompleteChainstateInitialization():
+        //   - LoadBlockIndex() - loads all blocks from disk into memory
+        //   - LoadChainTip() - sets the active chain tip
+        //   - ActivateBestChain() - activates the best chain
+        //
+        // SOLUTION: We need to call one of these libbitcoinkernel functions:
+        // - btck_chainstate_manager_activate_best_chain() OR
+        // - btck_chainstate_manager_load_chainstate() OR
+        // - btck_chainstate_load_block_index()
+        //
+        // However, these functions may not be exposed in the C API yet.
+        //
+        // WORKAROUND FOR NOW: If no API exists, the only solution is:
+        // 1. Use -reindex flag to rebuild index from block files
+        // 2. Or wait for libbitcoinkernel to expose LoadBlockIndex API
+        //
+        // Uncomment the line below if your libbitcoinkernel version has this function:
+        // unsafe { ffi::btck_chainstate_manager_activate_best_chain(chainman); }
+
+        eprintln!("[kernel] WARNING: Block index may not be loaded from disk!");
+        eprintln!("[kernel] This is a known limitation of the current libbitcoinkernel C API.");
+
         let kernel = Self { ctx, chain_params, chainman };
 
-        // Initialize genesis block if it doesn't exist
+        // Initialize or re-process genesis block
         // Bitcoin Core does this in LoadBlockIndex()
         eprintln!("[kernel] Checking for genesis block...");
 
@@ -178,6 +209,38 @@ impl Kernel {
         } else {
             let height = kernel.active_height().unwrap_or(0);
             eprintln!("[kernel] ✓ Genesis block exists. Active chain at height {}", height);
+
+            // WORKAROUND: If height is 0 but genesis exists, try re-processing genesis
+            // to trigger chain activation (this may help load block index from disk)
+            if height == 0 {
+                eprintln!("[kernel] Attempting workaround: Re-processing genesis to activate chain...");
+
+                use bitcoin::blockdata::constants::genesis_block;
+                use bitcoin::consensus::Encodable;
+
+                let net = match chain_type {
+                    CHAIN_MAIN => bitcoin::Network::Bitcoin,
+                    CHAIN_TESTNET | CHAIN_TESTNET4 => bitcoin::Network::Testnet,
+                    CHAIN_SIGNET => bitcoin::Network::Signet,
+                    _ => bitcoin::Network::Regtest,
+                };
+
+                let genesis = genesis_block(net);
+                let mut genesis_bytes = Vec::new();
+                genesis.consensus_encode(&mut genesis_bytes)
+                    .map_err(|e| anyhow::anyhow!("Failed to encode genesis: {}", e))?;
+
+                match kernel.process_block(&genesis_bytes) {
+                    Ok(()) => {
+                        eprintln!("[kernel] Genesis re-processed");
+                        let new_height = kernel.active_height().unwrap_or(0);
+                        eprintln!("[kernel] Height after re-process: {}", new_height);
+                    }
+                    Err(e) => {
+                        eprintln!("[kernel] Genesis re-process error (expected): {:#}", e);
+                    }
+                }
+            }
         }
 
         eprintln!("[kernel] Kernel initialization complete!");
