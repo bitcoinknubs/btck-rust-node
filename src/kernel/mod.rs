@@ -521,31 +521,3 @@ impl Drop for Kernel {
         eprintln!("[kernel] ✅ Kernel dropped - index and chainstate flushed to disk");
     }
 }
-
-impl Kernel {
-    /// Force flush chainstate and block index to disk by recreating the Kernel
-    ///
-    /// Bitcoin Core calls FlushStateToDisk() periodically, but libbitcoinkernel C API
-    /// doesn't expose this function. The ONLY way to flush is via btck_chainstate_manager_destroy().
-    ///
-    /// This method works by:
-    /// 1. Dropping the current Kernel (triggers ForceFlushStateToDisk via Drop trait)
-    /// 2. Creating a new Kernel with the same datadir
-    /// 3. The new Kernel loads the flushed state from disk
-    ///
-    /// Call this periodically (e.g., every 100 blocks) to ensure data persistence.
-    pub fn force_flush_and_reload(
-        chain_type: u8,
-        datadir: PathBuf,
-        blocksdir: PathBuf,
-    ) -> Result<Arc<Self>> {
-        eprintln!("[kernel] 🔄 Force flush: Recreating Kernel to flush state to disk...");
-
-        // Simply create a new Kernel - the old one will be dropped automatically
-        // when the Arc refcount reaches 0, triggering ForceFlushStateToDisk
-        let new_kernel = Arc::new(Self::new(chain_type, datadir, blocksdir)?);
-
-        eprintln!("[kernel] ✅ Kernel reloaded - previous state flushed to disk");
-        Ok(new_kernel)
-    }
-}
