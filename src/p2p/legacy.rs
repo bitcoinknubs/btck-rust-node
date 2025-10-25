@@ -417,6 +417,9 @@ impl PeerManager {
         // Headers are synced if we have headers loaded OR if we have blocks
         let headers_already_synced = header_chain_height >= start_height && start_height > 0;
 
+        // Prepare block download queue if headers are already synced
+        let mut downloader = Downloader::new(GLOBAL_INFLIGHT, PER_PEER_INFLIGHT);
+
         if loaded_headers.is_empty() {
             eprintln!("[p2p] 🆕 Starting fresh sync from genesis");
         } else {
@@ -426,7 +429,23 @@ impl PeerManager {
             eprintln!("[p2p]    Best header tip: {}", best_header_tip);
 
             if headers_already_synced {
-                eprintln!("[p2p]    ✓ Headers synced - will download remaining blocks");
+                eprintln!("[p2p]    ✓ Headers synced - preparing block download queue");
+
+                // Queue remaining blocks for download (skip already downloaded blocks)
+                let skip_count = (start_height as usize) + 1;
+                let mut blocks_to_download = Vec::new();
+
+                for hash in recent_chain.iter().skip(skip_count) {
+                    blocks_to_download.push(*hash);
+                }
+
+                if blocks_to_download.is_empty() {
+                    eprintln!("[p2p]    ✓ All blocks already downloaded! Nothing to do.");
+                } else {
+                    eprintln!("[p2p]    📊 Queuing {} blocks (heights {} to {})",
+                             blocks_to_download.len(), start_height + 1, header_chain_height);
+                    downloader.push_many(blocks_to_download);
+                }
             } else if header_chain_height > 0 {
                 eprintln!("[p2p]    ⏩ Will continue header sync from height {}", header_chain_height);
             }
@@ -436,7 +455,7 @@ impl PeerManager {
             net,
             user_agent: user_agent.into(),
             peers: HashMap::new(),
-            downloader: Downloader::new(GLOBAL_INFLIGHT, PER_PEER_INFLIGHT),
+            downloader,  // Use the downloader we prepared above (with queued blocks if resuming)
             prev_map,
             have_header: have,
             best_header_tip,
@@ -756,17 +775,33 @@ impl PeerManager {
         }
     }
 
-    /// 헤더 동기화 완료 후 모든 블록을 다운로드 큐에 추가
+    /// 헤더 동기화 완료 후 아직 다운로드하지 않은 블록만 큐에 추가
     fn queue_blocks_from_headers(&mut self) {
         let mut blocks_to_download = Vec::new();
 
-        // recent_chain의 모든 블록을 큐에 추가 (genesis 제외)
-        for hash in self.recent_chain.iter().skip(1) {
+        // start_height까지는 이미 다운로드됨
+        // recent_chain[0] = genesis (height 0)
+        // recent_chain[start_height] = height start_height의 블록
+        // 다운로드 시작: recent_chain[start_height + 1] 부터
+        let skip_count = (self.start_height as usize) + 1;
+
+        eprintln!("[p2p] 📊 Block download planning:");
+        eprintln!("[p2p]    Total headers: {}", self.recent_chain.len() - 1);  // -1 for genesis
+        eprintln!("[p2p]    Already downloaded: {} (heights 0-{})", self.start_height, self.start_height);
+        eprintln!("[p2p]    Remaining to download: {}", self.recent_chain.len().saturating_sub(skip_count));
+
+        // recent_chain의 이미 다운로드된 블록은 건너뛰고, 나머지만 큐에 추가
+        for hash in self.recent_chain.iter().skip(skip_count) {
             blocks_to_download.push(*hash);
         }
 
-        eprintln!("[p2p] Queuing {} blocks for download", blocks_to_download.len());
-        self.downloader.push_many(blocks_to_download);
+        if blocks_to_download.is_empty() {
+            eprintln!("[p2p] ✓ All blocks already downloaded! Nothing to do.");
+        } else {
+            eprintln!("[p2p] Queuing {} blocks for download (starting from height {})",
+                     blocks_to_download.len(), self.start_height + 1);
+            self.downloader.push_many(blocks_to_download);
+        }
     }
 
     async fn respond_getheaders(&mut self, from: SocketAddr, req: &msg_blk::GetHeadersMessage) -> Result<()> {
