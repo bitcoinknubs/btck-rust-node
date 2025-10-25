@@ -401,8 +401,24 @@ impl Kernel {
         // Get height AFTER processing to verify block was added
         let height_after = self.active_height().unwrap_or(-1);
 
-        // CRITICAL DIAGNOSTIC: Always log for first 20 blocks, then every 100
-        let should_log = height_after < 20 || height_after % 100 == 0;
+        // DIAGNOSTIC LOGGING STRATEGY:
+        // - Always log first 20 blocks after genesis (height 0-19)
+        // - Always log first 20 blocks after restart (track session count)
+        // - Then log every 10th block up to 100
+        // - Then every 100th block
+        use std::sync::atomic::{AtomicI32, Ordering};
+        static SESSION_BLOCKS_ADDED: AtomicI32 = AtomicI32::new(0);
+
+        let session_count = if new_block == 1 {
+            SESSION_BLOCKS_ADDED.fetch_add(1, Ordering::Relaxed)
+        } else {
+            SESSION_BLOCKS_ADDED.load(Ordering::Relaxed)
+        };
+
+        let should_log = height_after < 20                    // First 20 blocks after genesis
+                      || session_count < 20                   // First 20 blocks this session
+                      || (height_after < 100 && height_after % 10 == 0)  // Every 10th up to 100
+                      || height_after % 100 == 0;             // Every 100th after that
 
         if new_block == 1 {
             if height_after == height_before {
@@ -411,11 +427,12 @@ impl Kernel {
                 eprintln!("[kernel]    new_block={}, rc={}", new_block, rc);
                 eprintln!("[kernel]    This indicates blocks are NOT being added to the active chain!");
             } else if should_log {
-                eprintln!("[kernel] ✓ Block added: height {} -> {}", height_before, height_after);
+                eprintln!("[kernel] ✓ Block ADDED to active chain: height {} -> {} (session: +{})",
+                         height_before, height_after, session_count + 1);
             }
         } else {
             // new_block == 0 with rc=0 means block was already in index but processed successfully
-            if should_log || height_before < 20 {
+            if should_log {
                 eprintln!("[kernel] ℹ️  Block already in index: height remains {}, new_block={}", height_after, new_block);
             }
         }

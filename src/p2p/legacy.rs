@@ -1061,11 +1061,12 @@ impl PeerManager {
                             // Show progress (every block or every 100 blocks)
                             let (downloaded, total, percentage) = self.downloader.get_progress();
                             if downloaded % 100 == 0 || downloaded == total {
-                                eprintln!("[p2p] 📦 Block download progress: {:.1}% ({}/{} blocks)",
+                                eprintln!("[p2p] 📦 Download progress: {:.1}% ({}/{} blocks)",
                                          percentage, downloaded, total);
-                                eprintln!("[p2p]    Latest block: {}", h);
-                            } else {
-                                eprintln!("[p2p] 📦 Downloaded block {}/{} ({:.1}%): {}",
+                                eprintln!("[p2p]    Latest block hash: {}", h);
+                            } else if downloaded <= 20 || downloaded % 10 == 0 {
+                                // Show first 20 downloads, then every 10th
+                                eprintln!("[p2p] 📦 Download progress: block #{}/{} ({:.1}%): {}",
                                          downloaded, total, percentage, h);
                             }
 
