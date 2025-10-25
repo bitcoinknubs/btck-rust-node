@@ -128,8 +128,48 @@ impl Kernel {
         unsafe { ffi::btck_chainstate_manager_options_destroy(chainman_opts) };
         eprintln!("[kernel] Chainstate manager created successfully");
 
+        let kernel = Self { ctx, chain_params, chainman };
+
+        // Initialize genesis block if no active chain exists
+        // Bitcoin Core does this in LoadBlockIndex()
+        eprintln!("[kernel] Checking for genesis block...");
+        let height = kernel.active_height().unwrap_or(-1);
+        if height < 0 {
+            eprintln!("[kernel] No active chain found. Initializing genesis block...");
+
+            // Get genesis block for the network
+            use bitcoin::blockdata::constants::genesis_block;
+            use bitcoin::consensus::Encodable;
+
+            let net = match chain_type {
+                CHAIN_MAIN => bitcoin::Network::Bitcoin,
+                CHAIN_TESTNET | CHAIN_TESTNET4 => bitcoin::Network::Testnet,
+                CHAIN_SIGNET => bitcoin::Network::Signet,
+                _ => bitcoin::Network::Regtest,
+            };
+
+            let genesis = genesis_block(net);
+            let mut genesis_bytes = Vec::new();
+            genesis.consensus_encode(&mut genesis_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to encode genesis block: {}", e))?;
+
+            // Process genesis block
+            match kernel.process_block(&genesis_bytes) {
+                Ok(()) => {
+                    eprintln!("[kernel] ✓ Genesis block initialized: {}", genesis.block_hash());
+                    eprintln!("[kernel]    Chain is now active at height 0");
+                }
+                Err(e) => {
+                    eprintln!("[kernel] ⚠ Failed to initialize genesis block: {:#}", e);
+                    eprintln!("[kernel]    This may be expected if genesis is already in the database");
+                }
+            }
+        } else {
+            eprintln!("[kernel] ✓ Active chain found at height {}", height);
+        }
+
         eprintln!("[kernel] Kernel initialization complete!");
-        Ok(Self { ctx, chain_params, chainman })
+        Ok(kernel)
     }
 
     pub fn active_height(&self) -> Result<i32> {
