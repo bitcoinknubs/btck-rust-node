@@ -509,10 +509,15 @@ impl Kernel {
 
 impl Drop for Kernel {
     fn drop(&mut self) {
+        eprintln!("[kernel] 🔄 Dropping Kernel - flushing chainstate to disk...");
         unsafe {
+            eprintln!("[kernel]    Destroying chainstate manager (this should flush LevelDB)...");
             ffi::btck_chainstate_manager_destroy(self.chainman);
+            eprintln!("[kernel]    ✓ Chainstate manager destroyed");
+
             ffi::btck_context_destroy(self.ctx);
             ffi::btck_chain_parameters_destroy(self.chain_params);
         }
+        eprintln!("[kernel] ✅ Kernel dropped - all data should be flushed to disk");
     }
 }
