@@ -171,14 +171,20 @@ async fn main() -> Result<()> {
     // RPC 서버 시작 (shutdown signal과 함께)
     let rpc_addr: SocketAddr = args.rpc.parse().context("bad --rpc addr")?;
 
+    // Create oneshot channel for RPC-triggered shutdown
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
     tokio::select! {
-        result = rpc::start_rpc_server(rpc_addr, kernel.clone(), mempool.clone()) => {
+        result = rpc::start_rpc_server(rpc_addr, kernel.clone(), mempool.clone(), shutdown_tx) => {
             if let Err(e) = result {
                 eprintln!("[main] RPC server error: {:#}", e);
             }
         }
         _ = shutdown_signal => {
-            eprintln!("[main] Shutdown signal received");
+            eprintln!("[main] Ctrl+C signal received");
+        }
+        _ = &mut shutdown_rx => {
+            eprintln!("[main] RPC shutdown signal received");
         }
     }
 

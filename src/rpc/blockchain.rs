@@ -446,3 +446,22 @@ pub async fn verifychain(
     // TODO: Implement via kernel
     Ok(Json(json!({ "result": true })))
 }
+
+/// stop - Gracefully shutdown the node
+pub async fn stop(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    eprintln!("[rpc] 🛑 Received shutdown request via RPC");
+
+    // Take the sender from the mutex to trigger shutdown
+    let mut tx_guard = state.shutdown_tx.lock().await;
+    if let Some(tx) = tx_guard.take() {
+        // Send shutdown signal
+        let _ = tx.send(());
+        eprintln!("[rpc] ✅ Shutdown signal sent - node will stop gracefully");
+        Ok(Json(json!({ "result": "Bitcoin server stopping" })))
+    } else {
+        eprintln!("[rpc] ⚠️  Shutdown already in progress");
+        Ok(Json(json!({ "result": "Shutdown already in progress" })))
+    }
+}
