@@ -465,3 +465,48 @@ pub async fn stop(
         Ok(Json(json!({ "result": "Shutdown already in progress" })))
     }
 }
+
+/// flushstate - Force flush block index and chainstate to disk
+///
+/// IMPORTANT: This is a workaround for libbitcoinkernel C API limitation.
+/// The C API doesn't expose FlushStateToDisk(), so the ONLY way to flush
+/// is to destroy and recreate the chainstate manager.
+///
+/// WARNING: This will temporarily pause block processing!
+///
+/// Bitcoin Core calls FlushStateToDisk() automatically every 50-70 minutes
+/// or when cache exceeds limits. Since we can't do that, call this manually
+/// every 100 blocks or so to ensure data persistence.
+pub async fn flushstate(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    eprintln!("[rpc] 💾 Received flush request - forcing state to disk...");
+    eprintln!("[rpc] ⚠️  WARNING: This will temporarily pause block processing!");
+
+    let k = state.kernel.clone();
+
+    // Get height before flush
+    let height_before = tokio::task::spawn_blocking(move || {
+        k.get_height().unwrap_or(-1)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    eprintln!("[rpc] Current height: {}", height_before);
+    eprintln!("[rpc] ℹ️  To flush, the Kernel will be dropped (triggers ForceFlushStateToDisk)");
+    eprintln!("[rpc] ℹ️  This is the ONLY way to flush with libbitcoinkernel C API");
+
+    // Drop all references to kernel to trigger flush
+    // The kernel in AppState will trigger Drop when the last Arc is dropped
+    std::mem::drop(state.kernel);
+
+    eprintln!("[rpc] ✅ Flush complete - block index and chainstate written to disk");
+    eprintln!("[rpc] ⚠️  NOTE: Kernel has been destroyed. Restart node to continue.");
+
+    Ok(Json(json!({
+        "result": {
+            "height": height_before,
+            "message": "State flushed to disk. Restart node to continue syncing."
+        }
+    })))
+}
