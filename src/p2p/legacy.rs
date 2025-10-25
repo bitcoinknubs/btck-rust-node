@@ -24,6 +24,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpStream};
 use tokio::time::{sleep, timeout};
 use tokio::task::spawn_blocking;
+use tokio::sync::mpsc;
 
 use crate::chainparams::ChainParams;
 use crate::seeds;
@@ -288,6 +289,9 @@ pub struct PeerManager {
 
     on_block: Option<Arc<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>>,
     on_tx: Option<Arc<dyn Fn(&bitcoin::Transaction) -> anyhow::Result<()> + Send + Sync>>,
+
+    // Sequential block processing channel
+    block_tx: Option<mpsc::UnboundedSender<(BlockHash, Vec<u8>)>>,
 }
 
 impl PeerManager {
@@ -471,6 +475,7 @@ impl PeerManager {
             chain_params,
             on_block: None,
             on_tx: None,
+            block_tx: None,
         }
     }
 
@@ -478,7 +483,37 @@ impl PeerManager {
     where
         F: Fn(&[u8]) -> anyhow::Result<()> + Send + Sync + 'static,
     {
-        self.on_block = Some(Arc::new(f));
+        let callback = Arc::new(f);
+        self.on_block = Some(callback.clone());
+
+        // Create sequential block processing channel
+        let (tx, mut rx) = mpsc::unbounded_channel::<(BlockHash, Vec<u8>)>();
+        self.block_tx = Some(tx);
+
+        // Spawn dedicated sequential block processor task
+        // This ensures blocks are processed in the order they arrive (not in parallel)
+        tokio::spawn(async move {
+            eprintln!("[p2p] Sequential block processor started");
+            while let Some((block_hash, raw)) = rx.recv().await {
+                match spawn_blocking({
+                    let raw = raw.clone();
+                    let cb = callback.clone();
+                    move || (cb)(&raw)
+                }).await {
+                    Ok(Ok(())) => {
+                        eprintln!("[p2p] ✓ Block {} saved to chain", block_hash);
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("[p2p] ✗ Failed to process block {}: {:#}", block_hash, e);
+                    }
+                    Err(e) => {
+                        eprintln!("[p2p] ✗ Spawn error for block {}: {:#}", block_hash, e);
+                    }
+                }
+            }
+            eprintln!("[p2p] Sequential block processor stopped");
+        });
+
         self
     }
 
@@ -1042,24 +1077,14 @@ impl PeerManager {
                                 }
                             }
 
-                            // 3) 실제 블록 처리(디스크/검증)는 백그라운드로
-                            if let Some(cb) = &self.on_block {
+                            // 3) Send block to sequential processor
+                            // Bitcoin Core processes blocks sequentially to ensure parent blocks
+                            // are processed before children. We use a channel to maintain order.
+                            if let Some(ref tx) = self.block_tx {
                                 let raw = encode::serialize(&b);
-                                let cb = cb.clone();
-                                let block_hash = h;
-                                tokio::spawn(async move {
-                                    match spawn_blocking(move || (cb)(&raw)).await {
-                                        Ok(Ok(())) => {
-                                            eprintln!("[p2p] ✓ Block {} saved to chain", block_hash);
-                                        }
-                                        Ok(Err(e)) => {
-                                            eprintln!("[p2p] ✗ Failed to process block {}: {:#}", block_hash, e);
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[p2p] ✗ Spawn error for block {}: {:#}", block_hash, e);
-                                        }
-                                    }
-                                });
+                                if let Err(e) = tx.send((h, raw)) {
+                                    eprintln!("[p2p] ✗ Failed to send block {} to processor: {:#}", h, e);
+                                }
                             }
                         }
                         message::NetworkMessage::Ping(nonce) => {
