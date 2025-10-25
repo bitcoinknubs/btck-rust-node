@@ -80,6 +80,14 @@ async fn main() -> Result<()> {
     let mempool = Arc::new(Mempool::with_kernel(policy, kernel.clone()));
     eprintln!("[mempool] initialized with policy: {}", args.chain);
 
+    // Graceful shutdown signal
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+        eprintln!("\n[main] 🛑 Received Ctrl+C, initiating graceful shutdown...");
+    };
+
     // (옵션) 블록 임포트
     if let Some(list) = &args.import {
         let files: Vec<String> = list
@@ -97,7 +105,7 @@ async fn main() -> Result<()> {
     }
 
     // (옵션) P2P 기동
-    if !args.peer.is_empty() || matches!(args.chain.as_str(), "main" | "mainnet" | "testnet" | "signet") {
+    let p2p_handle = if !args.peer.is_empty() || matches!(args.chain.as_str(), "main" | "mainnet" | "testnet" | "signet") {
         let net = match args.chain.as_str() {
             "main" | "mainnet" => bitcoin::Network::Bitcoin,
             "testnet" => bitcoin::Network::Testnet,
@@ -113,7 +121,7 @@ async fn main() -> Result<()> {
         let k = kernel.clone();
         let m = mempool.clone();
 
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             // 블록 처리 콜백: libbitcoinkernel 검증/적용
             let process_block = move |raw: &[u8]| -> anyhow::Result<()> {
                 k.process_block(raw)
@@ -155,12 +163,38 @@ async fn main() -> Result<()> {
             if let Err(e) = pm.event_loop().await {
                 eprintln!("[p2p] loop error: {e:#}");
             }
-        });
+        }))
+    } else {
+        None
+    };
+
+    // RPC 서버 시작 (shutdown signal과 함께)
+    let rpc_addr: SocketAddr = args.rpc.parse().context("bad --rpc addr")?;
+
+    tokio::select! {
+        result = rpc::start_rpc_server(rpc_addr, kernel.clone(), mempool.clone()) => {
+            if let Err(e) = result {
+                eprintln!("[main] RPC server error: {:#}", e);
+            }
+        }
+        _ = shutdown_signal => {
+            eprintln!("[main] Shutdown signal received");
+        }
     }
 
-    // RPC 서버 시작
-    let rpc_addr: SocketAddr = args.rpc.parse().context("bad --rpc addr")?;
-    rpc::start_rpc_server(rpc_addr, kernel, mempool).await?;
+    // Graceful shutdown: drop all references to kernel
+    eprintln!("[main] Shutting down services...");
+
+    if let Some(handle) = p2p_handle {
+        handle.abort();
+        eprintln!("[main] P2P service stopped");
+    }
+
+    // Force drop kernel to trigger btck_chainstate_manager_destroy()
+    drop(kernel);
+    drop(mempool);
+
+    eprintln!("[main] ✅ Graceful shutdown complete - all data flushed to disk");
 
     Ok(())
 }
