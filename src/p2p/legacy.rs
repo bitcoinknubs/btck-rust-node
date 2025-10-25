@@ -1027,8 +1027,19 @@ impl PeerManager {
                             if let Some(cb) = &self.on_block {
                                 let raw = encode::serialize(&b);
                                 let cb = cb.clone();
+                                let block_hash = h;
                                 tokio::spawn(async move {
-                                    let _ = spawn_blocking(move || (cb)(&raw)).await;
+                                    match spawn_blocking(move || (cb)(&raw)).await {
+                                        Ok(Ok(())) => {
+                                            eprintln!("[p2p] ✓ Block {} saved to chain", block_hash);
+                                        }
+                                        Ok(Err(e)) => {
+                                            eprintln!("[p2p] ✗ Failed to process block {}: {:#}", block_hash, e);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[p2p] ✗ Spawn error for block {}: {:#}", block_hash, e);
+                                        }
+                                    }
                                 });
                             }
                         }

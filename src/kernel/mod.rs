@@ -108,8 +108,10 @@ impl Kernel {
 
         eprintln!("[kernel] Setting chainstate options...");
         unsafe {
-            ffi::btck_chainstate_manager_options_update_block_tree_db_in_memory(chainman_opts, 1);
-            ffi::btck_chainstate_manager_options_update_chainstate_db_in_memory(chainman_opts, 1);
+            // Store block index and chainstate on disk (not in memory)
+            // This matches Bitcoin Core behavior and allows resuming after restart
+            ffi::btck_chainstate_manager_options_update_block_tree_db_in_memory(chainman_opts, 0);
+            ffi::btck_chainstate_manager_options_update_chainstate_db_in_memory(chainman_opts, 0);
             ffi::btck_chainstate_manager_options_set_worker_threads_num(chainman_opts, 2);
         }
 
