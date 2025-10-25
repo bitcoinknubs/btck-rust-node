@@ -130,12 +130,23 @@ impl Kernel {
 
         let kernel = Self { ctx, chain_params, chainman };
 
-        // Initialize genesis block if no active chain exists
+        // Initialize genesis block if it doesn't exist
         // Bitcoin Core does this in LoadBlockIndex()
         eprintln!("[kernel] Checking for genesis block...");
-        let height = kernel.active_height().unwrap_or(-1);
-        if height < 0 {
-            eprintln!("[kernel] No active chain found. Initializing genesis block...");
+
+        // Check if genesis block actually exists (more reliable than height check)
+        let needs_genesis = unsafe {
+            let chain = ffi::btck_chainstate_manager_get_active_chain(kernel.chainman);
+            if chain.is_null() {
+                true  // No chain at all
+            } else {
+                let genesis = ffi::btck_chain_get_genesis(chain);
+                genesis.is_null()  // Genesis doesn't exist
+            }
+        };
+
+        if needs_genesis {
+            eprintln!("[kernel] No genesis block found. Initializing...");
 
             // Get genesis block for the network
             use bitcoin::blockdata::constants::genesis_block;
@@ -165,7 +176,8 @@ impl Kernel {
                 }
             }
         } else {
-            eprintln!("[kernel] ✓ Active chain found at height {}", height);
+            let height = kernel.active_height().unwrap_or(0);
+            eprintln!("[kernel] ✓ Genesis block exists. Active chain at height {}", height);
         }
 
         eprintln!("[kernel] Kernel initialization complete!");
