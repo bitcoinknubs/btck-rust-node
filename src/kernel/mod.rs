@@ -383,16 +383,22 @@ impl Kernel {
         // Get height AFTER processing to verify block was added
         let height_after = self.active_height().unwrap_or(-1);
 
-        // CRITICAL DIAGNOSTIC: Check if height actually increased
-        if new_block == 1 && height_after == height_before {
-            eprintln!("[kernel] ⚠️  CRITICAL: process_block succeeded but height didn't change!");
-            eprintln!("[kernel]    Height before: {}, Height after: {}", height_before, height_after);
-            eprintln!("[kernel]    new_block={}, rc={}", new_block, rc);
-            eprintln!("[kernel]    This indicates blocks are NOT being added to the active chain!");
-        } else if new_block == 1 {
-            // Only log every 10 blocks to avoid spam
-            if (height_after + 1) % 10 == 0 {
+        // CRITICAL DIAGNOSTIC: Always log for first 20 blocks, then every 100
+        let should_log = height_after < 20 || height_after % 100 == 0;
+
+        if new_block == 1 {
+            if height_after == height_before {
+                eprintln!("[kernel] ⚠️  CRITICAL: process_block succeeded but height didn't change!");
+                eprintln!("[kernel]    Height before: {}, Height after: {}", height_before, height_after);
+                eprintln!("[kernel]    new_block={}, rc={}", new_block, rc);
+                eprintln!("[kernel]    This indicates blocks are NOT being added to the active chain!");
+            } else if should_log {
                 eprintln!("[kernel] ✓ Block added: height {} -> {}", height_before, height_after);
+            }
+        } else {
+            // new_block == 0 means block was duplicate or already known
+            if should_log || height_before < 20 {
+                eprintln!("[kernel] ⚠️  Block NOT new: height remains {}, new_block={}", height_after, new_block);
             }
         }
 
