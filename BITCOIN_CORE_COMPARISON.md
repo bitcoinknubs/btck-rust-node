@@ -371,10 +371,16 @@ libbitcoinkernel C API의 경우:
 
 ### ⚠️ CRITICAL (반드시 확인/수정 필요)
 
-1. **LoadBlockIndex()**
-   - Bitcoin Core: 명시적 호출
-   - Rust: ❓ 자동? 확인 필요
-   - **테스트**: 재시작 후 블록이 로드되는가?
+1. ⚠️ **LoadBlockIndex()** (Confirmed Issue - commit c8b0135)
+   - Bitcoin Core: 명시적 호출 (CompleteChainstateInitialization)
+   - Rust: ❌ **자동 호출되지 않음** - CONFIRMED
+   - **문제**: 재시작 후 height=0으로 돌아감, 저장된 블록이 로드되지 않음
+   - **원인**: btck_chainstate_manager_create()는 LoadBlockIndex()를 호출하지 않음
+   - **Workaround**: Genesis 재처리로 체인 활성화 시도 (불완전한 해결책)
+   - **올바른 해결책**: libbitcoinkernel API에 다음 함수 필요:
+     - btck_chainstate_manager_activate_best_chain() 또는
+     - btck_chainstate_manager_load_chainstate() 또는
+     - btck_chainstate_load_block_index()
 
 2. **ActivateBestChain()**
    - Bitcoin Core: ProcessNewBlock에서 명시적 호출
