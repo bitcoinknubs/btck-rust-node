@@ -46,6 +46,7 @@ pub async fn start_rpc_server(
         .route("/gettxoutsetinfo", get(blockchain::gettxoutsetinfo).post(blockchain::gettxoutsetinfo))
         .route("/verifychain", post(blockchain::verifychain))
         .route("/stop", get(blockchain::stop).post(blockchain::stop))
+        .route("/flushstate", get(blockchain::flushstate).post(blockchain::flushstate))
         .with_state(state);
 
     eprintln!("[rpc] listening on http://{}", addr);
