@@ -369,23 +369,44 @@ libbitcoinkernel C API의 경우:
 
 ## 7. 누락되거나 불명확한 부분 요약
 
-### ⚠️ CRITICAL (반드시 확인/수정 필요)
+### ✅ RESOLVED - LoadBlockIndex 문제 (commit be293b6)
 
-1. ⚠️ **LoadBlockIndex()** (Confirmed Issue - commit c8b0135)
-   - Bitcoin Core: 명시적 호출 (CompleteChainstateInitialization)
-   - Rust: ❌ **자동 호출되지 않음** - CONFIRMED
-   - **문제**: 재시작 후 height=0으로 돌아감, 저장된 블록이 로드되지 않음
-   - **원인**: btck_chainstate_manager_create()는 LoadBlockIndex()를 호출하지 않음
-   - **Workaround**: Genesis 재처리로 체인 활성화 시도 (불완전한 해결책)
-   - **올바른 해결책**: libbitcoinkernel API에 다음 함수 필요:
-     - btck_chainstate_manager_activate_best_chain() 또는
-     - btck_chainstate_manager_load_chainstate() 또는
-     - btck_chainstate_load_block_index()
+1. ✅ **LoadBlockIndex() - DIRECTORY STRUCTURE 문제였음!**
+   - **이전 진단 (WRONG)**: btck_chainstate_manager_create()가 LoadBlockIndex()를 호출하지 않음
+   - **실제 원인 (CORRECT)**: Directory structure mismatch!
 
-2. **ActivateBestChain()**
+   **bitcoinkernel.cpp 분석 결과**:
+   ```cpp
+   btck_chainstate_manager_create() {
+       LoadChainstate();              // ← LoadBlockIndex 포함! ✅
+       VerifyLoadedChainstate();      // ← 검증 ✅
+       ActivateBestChain();           // ← 체인 활성화 ✅
+   }
+   ```
+
+   **API는 올바르게 작동했음!** 문제는 디렉토리 구조:
+
+   **잘못된 구조** (--datadir ./data --blocksdir ./blocks):
+   ```
+   Block files:  ./blocks/blk*.dat          ← 블록이 여기 저장됨
+   Block index:  ./data/blocks/index/       ← 인덱스는 여기서 찾음 (비어있음!)
+   ```
+
+   **올바른 구조** (--datadir ./data만 사용):
+   ```
+   Block files:  ./data/blocks/blk*.dat     ← 블록이 여기 저장됨
+   Block index:  ./data/blocks/index/       ← 인덱스도 같은 위치! ✅
+   ```
+
+   **해결책**:
+   - main.rs: blocksdir 기본값을 datadir/blocks로 설정
+   - kernel/mod.rs: 디렉토리 구조 경고 추가
+   - 사용자는 `--blocksdir` 플래그를 제거하거나 `--blocksdir ./data/blocks` 사용
+
+2. ✅ **ActivateBestChain()**
    - Bitcoin Core: ProcessNewBlock에서 명시적 호출
-   - Rust: ❓ process_block 내부에서 자동?
-   - **테스트**: 블록이 실제로 체인에 연결되는가?
+   - Rust: ✅ **btck_chainstate_manager_create() 내부에서 자동 호출** (bitcoinkernel.cpp 확인됨)
+   - **결론**: API가 올바르게 처리함
 
 3. ✅ **블록 순서 보장** (Fixed in 4b98408)
    - Bitcoin Core: 순차 처리 + orphan 관리
