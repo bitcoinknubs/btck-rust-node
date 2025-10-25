@@ -422,7 +422,10 @@ impl PeerManager {
 
         // Determine if headers are synced
         // Headers are synced if we have headers loaded OR if we have blocks
-        let headers_already_synced = header_chain_height >= start_height && start_height > 0;
+        // Bitcoin Core logic: If we have any headers loaded, headers sync is complete
+        // Even if start_height is 0 (due to incomplete shutdown), we should proceed with block download
+        // The key is: do we have headers? If yes, start downloading blocks.
+        let headers_already_synced = !loaded_headers.is_empty();
 
         // Prepare block download queue if headers are already synced
         let mut downloader = Downloader::new(GLOBAL_INFLIGHT, PER_PEER_INFLIGHT);
