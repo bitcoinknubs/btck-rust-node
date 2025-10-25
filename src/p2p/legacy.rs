@@ -891,7 +891,26 @@ impl PeerManager {
                     match msg {
                         message::NetworkMessage::Headers(h) => {
                             eprintln!("[p2p] *** RECEIVED HEADERS: {} from {addr} ***", h.len());
-                            if !h.is_empty() {
+
+                            // Bitcoin Core: Empty headers response = caught up (no more headers)
+                            if h.is_empty() {
+                                eprintln!("[p2p] 📭 Empty headers response - we are caught up!");
+                                last_headers_ts = tokio::time::Instant::now();
+                                self.check_headers_sync_complete();
+
+                                // If headers sync complete, start block download
+                                if self.headers_synced {
+                                    let assign = self.downloader.poll_assign(addr);
+                                    if !assign.is_empty() {
+                                        let invs: Vec<msg_blk::Inventory> =
+                                            assign.iter().map(|h| msg_blk::Inventory::WitnessBlock(*h)).collect();
+                                        if let Some(p) = self.peers.get_mut(&addr) {
+                                            eprintln!("[p2p] Starting block download: requesting {} blocks", invs.len());
+                                            let _ = p.send(message::NetworkMessage::GetData(invs)).await;
+                                        }
+                                    }
+                                }
+                            } else {
                                 last_headers_ts = tokio::time::Instant::now();
 
                                 // Bitcoin Core 방식: 헤더만 처리

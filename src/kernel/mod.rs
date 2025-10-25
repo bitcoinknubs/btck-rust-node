@@ -128,8 +128,60 @@ impl Kernel {
         unsafe { ffi::btck_chainstate_manager_options_destroy(chainman_opts) };
         eprintln!("[kernel] Chainstate manager created successfully");
 
+        let kernel = Self { ctx, chain_params, chainman };
+
+        // Initialize genesis block if it doesn't exist
+        // Bitcoin Core does this in LoadBlockIndex()
+        eprintln!("[kernel] Checking for genesis block...");
+
+        // Check if genesis block actually exists (more reliable than height check)
+        let needs_genesis = unsafe {
+            let chain = ffi::btck_chainstate_manager_get_active_chain(kernel.chainman);
+            if chain.is_null() {
+                true  // No chain at all
+            } else {
+                let genesis = ffi::btck_chain_get_genesis(chain);
+                genesis.is_null()  // Genesis doesn't exist
+            }
+        };
+
+        if needs_genesis {
+            eprintln!("[kernel] No genesis block found. Initializing...");
+
+            // Get genesis block for the network
+            use bitcoin::blockdata::constants::genesis_block;
+            use bitcoin::consensus::Encodable;
+
+            let net = match chain_type {
+                CHAIN_MAIN => bitcoin::Network::Bitcoin,
+                CHAIN_TESTNET | CHAIN_TESTNET4 => bitcoin::Network::Testnet,
+                CHAIN_SIGNET => bitcoin::Network::Signet,
+                _ => bitcoin::Network::Regtest,
+            };
+
+            let genesis = genesis_block(net);
+            let mut genesis_bytes = Vec::new();
+            genesis.consensus_encode(&mut genesis_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to encode genesis block: {}", e))?;
+
+            // Process genesis block
+            match kernel.process_block(&genesis_bytes) {
+                Ok(()) => {
+                    eprintln!("[kernel] ✓ Genesis block initialized: {}", genesis.block_hash());
+                    eprintln!("[kernel]    Chain is now active at height 0");
+                }
+                Err(e) => {
+                    eprintln!("[kernel] ⚠ Failed to initialize genesis block: {:#}", e);
+                    eprintln!("[kernel]    This may be expected if genesis is already in the database");
+                }
+            }
+        } else {
+            let height = kernel.active_height().unwrap_or(0);
+            eprintln!("[kernel] ✓ Genesis block exists. Active chain at height {}", height);
+        }
+
         eprintln!("[kernel] Kernel initialization complete!");
-        Ok(Self { ctx, chain_params, chainman })
+        Ok(kernel)
     }
 
     pub fn active_height(&self) -> Result<i32> {
