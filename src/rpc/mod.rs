@@ -3,7 +3,7 @@ pub mod blockchain;
 // pub mod network; // Temporarily disabled - requires ConnectionManager
 
 use anyhow::Result;
-use axum::{routing::post, Router};
+use axum::{routing::{get, post}, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -24,19 +24,19 @@ pub async fn start_rpc_server(
     let state = AppState { kernel, mempool };
 
     let app = Router::new()
-        // Blockchain RPCs
-        .route("/getblockchaininfo", post(blockchain::getblockchaininfo))
-        .route("/getbestblockhash", post(blockchain::getbestblockhash))
-        .route("/getblockcount", post(blockchain::getblockcount))
+        // Blockchain RPCs - GET support for simple queries, POST for queries with params
+        .route("/getblockchaininfo", get(blockchain::getblockchaininfo).post(blockchain::getblockchaininfo))
+        .route("/getbestblockhash", get(blockchain::getbestblockhash).post(blockchain::getbestblockhash))
+        .route("/getblockcount", get(blockchain::getblockcount).post(blockchain::getblockcount))
         .route("/getblockhash", post(blockchain::getblockhash))
         .route("/getblock", post(blockchain::getblock))
         .route("/getblockheader", post(blockchain::getblockheader))
-        .route("/getchaintips", post(blockchain::getchaintips))
-        .route("/getdifficulty", post(blockchain::getdifficulty))
-        .route("/getmempoolinfo", post(blockchain::getmempoolinfo))
+        .route("/getchaintips", get(blockchain::getchaintips).post(blockchain::getchaintips))
+        .route("/getdifficulty", get(blockchain::getdifficulty).post(blockchain::getdifficulty))
+        .route("/getmempoolinfo", get(blockchain::getmempoolinfo).post(blockchain::getmempoolinfo))
         .route("/getrawmempool", post(blockchain::getrawmempool))
         .route("/gettxout", post(blockchain::gettxout))
-        .route("/gettxoutsetinfo", post(blockchain::gettxoutsetinfo))
+        .route("/gettxoutsetinfo", get(blockchain::gettxoutsetinfo).post(blockchain::gettxoutsetinfo))
         .route("/verifychain", post(blockchain::verifychain))
         .with_state(state);
 
