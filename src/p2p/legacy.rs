@@ -41,8 +41,11 @@ const IMMEDIATE_REQ_TIMEOUT: u64 = 60;  // After immediate request on full batch
 const MAX_HEADERS_PER_MSG: usize = 2000;
 
 // 전역/피어별 인플라이트 제한
-const GLOBAL_INFLIGHT: usize = 256;
-const PER_PEER_INFLIGHT: usize = 16;
+// Block download concurrency limits
+// Lower values ensure blocks arrive in order, reducing orphan blocks
+// Bitcoin Core uses higher values but has sophisticated block ordering logic
+const GLOBAL_INFLIGHT: usize = 16;  // Max total blocks downloading simultaneously
+const PER_PEER_INFLIGHT: usize = 4; // Max blocks per peer to reduce out-of-order arrival
 
 const MAX_OUTBOUND_FROM_ADDR: usize = 8;
 

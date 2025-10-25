@@ -376,8 +376,26 @@ impl Kernel {
 
         unsafe { ffi::btck_block_destroy(ptr) };
 
+        // Handle different return codes:
+        // rc=0, new_block=1: Block successfully added to active chain (NEW block)
+        // rc=0, new_block=0: Block already exists in block index but successfully processed
+        // rc=-1, new_block=0: Block already known/duplicate (NOT an error - normal during resync)
+        // rc=-1, new_block=1: Actual error - block validation failed
+
         if rc != 0 {
-            anyhow::bail!("process_block rc={} new_block={}", rc, new_block);
+            // If rc=-1 and new_block=0, this means "block already known"
+            // This is NOT an error - it's normal when resyncing after incomplete shutdown
+            if rc == -1 && new_block == 0 {
+                // Block already exists in block index - this is normal
+                // No need to log for every duplicate block, only for diagnostics
+                if height_before < 20 {
+                    eprintln!("[kernel] ℹ️  Block already known (rc={}, new_block=0) - skipping", rc);
+                }
+                return Ok(());
+            } else {
+                // Actual error - block validation failed
+                anyhow::bail!("process_block failed: rc={} new_block={}", rc, new_block);
+            }
         }
 
         // Get height AFTER processing to verify block was added
@@ -396,9 +414,9 @@ impl Kernel {
                 eprintln!("[kernel] ✓ Block added: height {} -> {}", height_before, height_after);
             }
         } else {
-            // new_block == 0 means block was duplicate or already known
+            // new_block == 0 with rc=0 means block was already in index but processed successfully
             if should_log || height_before < 20 {
-                eprintln!("[kernel] ⚠️  Block NOT new: height remains {}, new_block={}", height_after, new_block);
+                eprintln!("[kernel] ℹ️  Block already in index: height remains {}, new_block={}", height_after, new_block);
             }
         }
 
