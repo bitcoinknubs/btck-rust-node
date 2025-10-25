@@ -354,6 +354,9 @@ impl Kernel {
     pub fn process_block(&self, raw: &[u8]) -> Result<()> {
         use std::os::raw::c_int;
 
+        // Get height BEFORE processing
+        let height_before = self.active_height().unwrap_or(-1);
+
         let ptr = unsafe {
             ffi::btck_block_create(raw.as_ptr() as *const c_void, raw.len())
         };
@@ -375,6 +378,22 @@ impl Kernel {
 
         if rc != 0 {
             anyhow::bail!("process_block rc={} new_block={}", rc, new_block);
+        }
+
+        // Get height AFTER processing to verify block was added
+        let height_after = self.active_height().unwrap_or(-1);
+
+        // CRITICAL DIAGNOSTIC: Check if height actually increased
+        if new_block == 1 && height_after == height_before {
+            eprintln!("[kernel] ⚠️  CRITICAL: process_block succeeded but height didn't change!");
+            eprintln!("[kernel]    Height before: {}, Height after: {}", height_before, height_after);
+            eprintln!("[kernel]    new_block={}, rc={}", new_block, rc);
+            eprintln!("[kernel]    This indicates blocks are NOT being added to the active chain!");
+        } else if new_block == 1 {
+            // Only log every 10 blocks to avoid spam
+            if (height_after + 1) % 10 == 0 {
+                eprintln!("[kernel] ✓ Block added: height {} -> {}", height_before, height_after);
+            }
         }
 
         Ok(())
