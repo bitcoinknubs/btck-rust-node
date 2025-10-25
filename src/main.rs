@@ -31,8 +31,10 @@ struct Args {
     datadir: PathBuf,
 
     /// blocks directory (for raw block files)
-    #[arg(long, default_value = "./blocks")]
-    blocksdir: PathBuf,
+    /// IMPORTANT: Should be set to <datadir>/blocks for proper operation
+    /// If not specified, defaults to <datadir>/blocks
+    #[arg(long)]
+    blocksdir: Option<PathBuf>,
 
     /// optional: import blk*.dat files (comma-separated absolute paths)
     #[arg(long)]
@@ -54,8 +56,20 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Fix blocksdir to be datadir/blocks if not explicitly specified
+    // This is CRITICAL for proper block index loading!
+    // libbitcoinkernel stores:
+    //   - Block files in: blocksdir/blk*.dat
+    //   - Block index in: datadir/blocks/index/
+    // If these don't align, blocks won't load on restart!
+    let blocksdir = args.blocksdir.unwrap_or_else(|| args.datadir.join("blocks"));
+
+    eprintln!("[main] Using directories:");
+    eprintln!("[main]   Data:   {:?}", args.datadir);
+    eprintln!("[main]   Blocks: {:?}", blocksdir);
+
     // 커널 초기화
-    let kernel = Arc::new(Kernel::new(&args.chain, &args.datadir, &args.blocksdir)?);
+    let kernel = Arc::new(Kernel::new(&args.chain, &args.datadir, &blocksdir)?);
 
     // Mempool 초기화
     let policy = match args.chain.as_str() {

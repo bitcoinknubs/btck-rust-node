@@ -44,6 +44,27 @@ impl Kernel {
         eprintln!("[kernel] Initializing kernel for chain: {}", chain);
         eprintln!("[kernel] Data directory: {:?}", datadir);
         eprintln!("[kernel] Blocks directory: {:?}", blocksdir);
+        eprintln!("[kernel] ");
+        eprintln!("[kernel] ⚠️  DIRECTORY STRUCTURE (Bitcoin Core/libbitcoinkernel):");
+        eprintln!("[kernel]    Block files (blk*.dat): {:?}/", blocksdir);
+        eprintln!("[kernel]    Block index (LevelDB):  {:?}/blocks/index/", datadir);
+        eprintln!("[kernel]    Chainstate (UTXO):      {:?}/chainstate/", datadir);
+        eprintln!("[kernel] ");
+
+        // Check if directory structure might cause issues
+        let blocks_canonical = blocksdir.canonicalize().unwrap_or_else(|_| blocksdir.clone());
+        let expected_blocks = datadir.join("blocks");
+        let expected_canonical = expected_blocks.canonicalize().unwrap_or(expected_blocks.clone());
+
+        if blocks_canonical != expected_canonical {
+            eprintln!("[kernel] ⚠️  WARNING: blocksdir != datadir/blocks!");
+            eprintln!("[kernel]    This means block files and block index are in different locations.");
+            eprintln!("[kernel]    Current:  blocksdir = {:?}", blocks_canonical);
+            eprintln!("[kernel]    Expected: blocksdir = {:?}", expected_canonical);
+            eprintln!("[kernel]    This may cause blocks to not load on restart!");
+            eprintln!("[kernel]    Recommended: Remove --blocksdir or set it to <datadir>/blocks");
+            eprintln!("[kernel] ");
+        }
 
         let chain_type: u8 = match chain {
             "main" | "mainnet" => CHAIN_MAIN,
