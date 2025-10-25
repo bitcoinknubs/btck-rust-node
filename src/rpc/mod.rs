@@ -6,6 +6,7 @@ use anyhow::Result;
 use axum::{routing::{get, post}, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::kernel::Kernel;
 use crate::mempool::Mempool;
@@ -14,14 +15,20 @@ use crate::mempool::Mempool;
 pub struct AppState {
     pub kernel: Arc<Kernel>,
     pub mempool: Arc<Mempool>,
+    pub shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 pub async fn start_rpc_server(
     addr: SocketAddr,
     kernel: Arc<Kernel>,
     mempool: Arc<Mempool>,
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
-    let state = AppState { kernel, mempool };
+    let state = AppState {
+        kernel,
+        mempool,
+        shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+    };
 
     let app = Router::new()
         // Blockchain RPCs - GET support for simple queries, POST for queries with params
@@ -38,10 +45,11 @@ pub async fn start_rpc_server(
         .route("/gettxout", post(blockchain::gettxout))
         .route("/gettxoutsetinfo", get(blockchain::gettxoutsetinfo).post(blockchain::gettxoutsetinfo))
         .route("/verifychain", post(blockchain::verifychain))
+        .route("/stop", get(blockchain::stop).post(blockchain::stop))
         .with_state(state);
 
     eprintln!("[rpc] listening on http://{}", addr);
-    
+
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await?;
