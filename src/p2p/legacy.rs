@@ -595,6 +595,20 @@ impl PeerManager {
                 eprintln!("[p2p] ⚠️  Peer {} not suitable for sync (network={}, height={})",
                          addr, has_network_service, peer_height);
             }
+        } else {
+            // Headers already synced - start downloading blocks from this new peer
+            eprintln!("[p2p] Headers already synced, checking if we can download blocks from {}", addr);
+            let assign = self.downloader.poll_assign(addr);
+            if !assign.is_empty() {
+                let invs: Vec<msg_blk::Inventory> =
+                    assign.iter().map(|h| msg_blk::Inventory::WitnessBlock(*h)).collect();
+                if let Some(p) = self.peers.get_mut(&addr) {
+                    eprintln!("[p2p] 🚀 STARTING BLOCK DOWNLOAD: requesting {} blocks from new peer {}", invs.len(), addr);
+                    let _ = p.send(message::NetworkMessage::GetData(invs)).await;
+                }
+            } else {
+                eprintln!("[p2p] No blocks to download from {} (queue empty or peer already assigned)", addr);
+            }
         }
         Ok(())
     }
