@@ -108,8 +108,30 @@ impl Kernel {
         eprintln!("[kernel] Context created successfully");
 
         eprintln!("[kernel] Creating chainstate manager options...");
-        let data_c = CString::new(datadir.to_string_lossy().as_bytes())?;
-        let blocks_c = CString::new(blocksdir.to_string_lossy().as_bytes())?;
+
+        // CRITICAL: Convert to absolute paths!
+        // libbitcoinkernel may not handle relative paths correctly,
+        // especially if it changes working directory or runs in different threads.
+        let datadir_abs = datadir.canonicalize()
+            .unwrap_or_else(|_| {
+                eprintln!("[kernel] WARNING: Cannot canonicalize datadir {:?}, creating it first", datadir);
+                std::fs::create_dir_all(datadir).ok();
+                datadir.canonicalize().unwrap_or_else(|_| datadir.clone())
+            });
+
+        let blocksdir_abs = blocksdir.canonicalize()
+            .unwrap_or_else(|_| {
+                eprintln!("[kernel] WARNING: Cannot canonicalize blocksdir {:?}, creating it first", blocksdir);
+                std::fs::create_dir_all(blocksdir).ok();
+                blocksdir.canonicalize().unwrap_or_else(|_| blocksdir.clone())
+            });
+
+        eprintln!("[kernel] Using ABSOLUTE paths:");
+        eprintln!("[kernel]   Data dir:   {:?}", datadir_abs);
+        eprintln!("[kernel]   Blocks dir: {:?}", blocksdir_abs);
+
+        let data_c = CString::new(datadir_abs.to_string_lossy().as_bytes())?;
+        let blocks_c = CString::new(blocksdir_abs.to_string_lossy().as_bytes())?;
         let chainman_opts = unsafe {
             ffi::btck_chainstate_manager_options_create(
                 ctx,
