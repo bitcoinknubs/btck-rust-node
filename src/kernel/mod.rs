@@ -391,25 +391,20 @@ impl Kernel {
         // rc=0, new_block=1: Block successfully added to active chain (NEW block)
         // rc=0, new_block=0: Block already exists in block index but successfully processed
         // rc=-1, new_block=0: Block already known/duplicate (NOT an error - normal during resync)
+        //                     However, the block may still trigger chain activation!
         // rc=-1, new_block=1: Actual error - block validation failed
 
-        if rc != 0 {
-            // If rc=-1 and new_block=0, this means "block already known"
-            // This is NOT an error - it's normal when resyncing after incomplete shutdown
-            if rc == -1 && new_block == 0 {
-                // Block already exists in block index - this is normal
-                // No need to log for every duplicate block, only for diagnostics
-                if height_before < 20 {
-                    eprintln!("[kernel] ℹ️  Block already known (rc={}, new_block=0) - skipping", rc);
-                }
-                return Ok(());
-            } else {
-                // Actual error - block validation failed
-                anyhow::bail!("process_block failed: rc={} new_block={}", rc, new_block);
-            }
+        let is_already_known = rc == -1 && new_block == 0;
+        let is_error = rc != 0 && !is_already_known;
+
+        if is_error {
+            // Actual error - block validation failed
+            anyhow::bail!("process_block failed: rc={} new_block={}", rc, new_block);
         }
 
-        // Get height AFTER processing to verify block was added
+        // Get height AFTER processing to verify block was added or activated
+        // CRITICAL: Check height even for "already known" blocks!
+        // Blocks in the index may still trigger chain activation on restart
         let height_after = self.active_height().unwrap_or(-1);
 
         // DIAGNOSTIC LOGGING STRATEGY:
@@ -420,7 +415,10 @@ impl Kernel {
         use std::sync::atomic::{AtomicI32, Ordering};
         static SESSION_BLOCKS_ADDED: AtomicI32 = AtomicI32::new(0);
 
-        let session_count = if new_block == 1 {
+        // Track if chain height actually advanced
+        let chain_advanced = height_after > height_before;
+
+        let session_count = if chain_advanced {
             SESSION_BLOCKS_ADDED.fetch_add(1, Ordering::Relaxed)
         } else {
             SESSION_BLOCKS_ADDED.load(Ordering::Relaxed)
@@ -431,25 +429,51 @@ impl Kernel {
                       || (height_after < 100 && height_after % 10 == 0)  // Every 10th up to 100
                       || height_after % 100 == 0;             // Every 100th after that
 
-        if new_block == 1 {
-            if height_after == height_before {
-                eprintln!("[kernel] ⚠️  CRITICAL: process_block succeeded but height didn't change!");
+        if is_already_known {
+            // Block was already in index (rc=-1, new_block=0)
+            // Check if it still advanced the chain (may happen on restart when chain reactivates)
+            if chain_advanced {
+                if should_log {
+                    eprintln!("[kernel] ✓ Block ACTIVATED from index: height {} -> {} (session: +{})",
+                             height_before, height_after, session_count);
+                    eprintln!("[kernel]    Block was already known but triggered chain activation");
+                }
+            } else {
+                // Block known and height didn't change - truly a duplicate
+                if should_log {
+                    eprintln!("[kernel] ℹ️  Block already known and active: height remains {} (rc={}, new_block={})",
+                             height_after, rc, new_block);
+                }
+            }
+        } else if new_block == 1 {
+            // New block added (rc=0, new_block=1)
+            if chain_advanced {
+                if should_log {
+                    eprintln!("[kernel] ✓ Block ADDED to active chain: height {} -> {} (session: +{})",
+                             height_before, height_after, session_count);
+
+                    // CRITICAL DIAGNOSTIC: Verify block file was actually written
+                    if height_after <= 10 || height_after % 100 == 0 {
+                        self.verify_block_files_written(height_after);
+                    }
+                }
+            } else {
+                eprintln!("[kernel] ⚠️  CRITICAL: new_block=1 but height didn't change!");
                 eprintln!("[kernel]    Height before: {}, Height after: {}", height_before, height_after);
                 eprintln!("[kernel]    new_block={}, rc={}", new_block, rc);
                 eprintln!("[kernel]    This indicates blocks are NOT being added to the active chain!");
-            } else if should_log {
-                eprintln!("[kernel] ✓ Block ADDED to active chain: height {} -> {} (session: +{})",
-                         height_before, height_after, session_count + 1);
-
-                // CRITICAL DIAGNOSTIC: Verify block file was actually written
-                if height_after <= 10 || height_after % 100 == 0 {
-                    self.verify_block_files_written(height_after);
-                }
             }
         } else {
             // new_block == 0 with rc=0 means block was already in index but processed successfully
-            if should_log {
-                eprintln!("[kernel] ℹ️  Block already in index: height remains {}, new_block={}", height_after, new_block);
+            if chain_advanced {
+                if should_log {
+                    eprintln!("[kernel] ✓ Block from index activated: height {} -> {} (rc={}, new_block={})",
+                             height_before, height_after, rc, new_block);
+                }
+            } else {
+                if should_log {
+                    eprintln!("[kernel] ℹ️  Block already in index: height remains {}, new_block={}", height_after, new_block);
+                }
             }
         }
 
