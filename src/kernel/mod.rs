@@ -452,6 +452,11 @@ impl Kernel {
             } else if should_log {
                 eprintln!("[kernel] ✓ Block ADDED to active chain: height {} -> {} (session: +{})",
                          height_before, height_after, session_count + 1);
+
+                // CRITICAL DIAGNOSTIC: Verify block file was actually written
+                if height_after <= 10 || height_after % 100 == 0 {
+                    self.verify_block_files_written(height_after);
+                }
             }
         } else {
             // new_block == 0 with rc=0 means block was already in index but processed successfully
@@ -527,6 +532,83 @@ impl Kernel {
         // - btck_chainstate_manager_get_utxo(outpoint) -> Option<TxOut>
         // For now, assume inputs are available
         Ok((true, 0))
+    }
+
+    /// CRITICAL DIAGNOSTIC: Verify block files are actually being written to disk
+    fn verify_block_files_written(&self, height: i32) {
+        use std::fs;
+        use std::io::Read;
+
+        eprintln!("[kernel] 🔍 VERIFYING BLOCK FILE after height {}...", height);
+
+        // Check blk00000.dat (first block file)
+        let block_file = std::path::Path::new("./data/blocks/blk00000.dat");
+
+        match fs::metadata(block_file) {
+            Ok(metadata) => {
+                let size = metadata.len();
+                eprintln!("[kernel]    ✓ blk00000.dat EXISTS");
+                eprintln!("[kernel]    📊 File size: {} bytes ({:.2} MB)", size, size as f64 / 1024.0 / 1024.0);
+
+                // Read first 1KB to check for block magic bytes
+                if let Ok(mut file) = fs::File::open(block_file) {
+                    let mut buffer = vec![0u8; 1024];
+                    if let Ok(n) = file.read(&mut buffer) {
+                        // Signet magic: 0a 03 cf 40
+                        let magic_count = buffer.windows(4)
+                            .filter(|w| w == &[0x0a, 0x03, 0xcf, 0x40])
+                            .count();
+
+                        if magic_count > 0 {
+                            eprintln!("[kernel]    ✅ Found {} block magic bytes in first 1KB!", magic_count);
+                        } else {
+                            eprintln!("[kernel]    ⚠️  NO BLOCK MAGIC BYTES found in first 1KB!");
+                            eprintln!("[kernel]    First 64 bytes: {:02x?}", &buffer[..64.min(n)]);
+                        }
+                    }
+                }
+
+                // Check if file size is increasing (not stuck at pre-allocated size)
+                use std::sync::Mutex;
+                use std::collections::HashMap;
+                static LAST_SIZES: Mutex<HashMap<i32, u64>> = Mutex::new(HashMap::new());
+
+                let mut sizes = LAST_SIZES.lock().unwrap();
+                if let Some(&prev_size) = sizes.get(&(height - 1)) {
+                    if size == prev_size {
+                        eprintln!("[kernel]    ❌ FILE SIZE NOT CHANGING! Still {} bytes", size);
+                        eprintln!("[kernel]    This means blocks are NOT being written to disk!");
+                    } else {
+                        eprintln!("[kernel]    ✅ File growing: {} -> {} (+{} bytes)",
+                                 prev_size, size, size - prev_size);
+                    }
+                }
+                sizes.insert(height, size);
+            }
+            Err(e) => {
+                eprintln!("[kernel]    ❌ blk00000.dat DOES NOT EXIST: {}", e);
+                eprintln!("[kernel]    Blocks are being processed but NOT written to disk!");
+            }
+        }
+
+        // Also check absolute path to ensure it's not being written elsewhere
+        if let Ok(cwd) = std::env::current_dir() {
+            let abs_path = cwd.join("data/blocks/blk00000.dat");
+            eprintln!("[kernel]    Expected absolute path: {:?}", abs_path);
+
+            // Search for ANY blk*.dat files in the system
+            eprintln!("[kernel]    Checking if blocks written to different location...");
+            if let Ok(home) = std::env::var("HOME") {
+                let alt_path = std::path::Path::new(&home)
+                    .join("development/btck-rust-node/data/blocks/blk00000.dat");
+                if alt_path.exists() {
+                    if let Ok(meta) = fs::metadata(&alt_path) {
+                        eprintln!("[kernel]    ℹ️  Found blk00000.dat at alternate location: {:?}", alt_path);
+                        eprintln!("[kernel]       Size: {} bytes", meta.len());
+                    }
+                }
+            }
+        }
     }
 }
 
