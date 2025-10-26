@@ -91,72 +91,10 @@ impl Kernel {
 
         unsafe { ffi::btck_context_options_set_chainparams(ctx_opts, chain_params) };
 
-        // CRITICAL: Set up validation callbacks to monitor block processing
-        // Without these, we may not get proper feedback on block validation
-        eprintln!("[kernel] Setting up validation interface callbacks...");
-
-        unsafe extern "C" fn block_checked_callback(
-            _block_hash: *const u8,
-            _state: *const ffi::btck_BlockValidationState,
-            _user_data: *mut std::ffi::c_void,
-        ) {
-            // This is called when a block's validation completes
-            eprintln!("[kernel/callback] ✓ Block validation completed");
-        }
-
-        unsafe extern "C" fn block_connected_callback(
-            _block_hash: *const u8,
-            _height: i32,
-            _user_data: *mut std::ffi::c_void,
-        ) {
-            eprintln!("[kernel/callback] ✓ Block CONNECTED to active chain at height {}", _height);
-        }
-
-        let mut validation_callbacks = ffi::btck_ValidationInterfaceCallbacks {
-            block_checked: Some(block_checked_callback),
-            block_connected: Some(block_connected_callback),
-            user_data: std::ptr::null_mut(),
-        };
-
-        unsafe {
-            ffi::btck_context_options_set_validation_interface(
-                ctx_opts,
-                &mut validation_callbacks as *mut ffi::btck_ValidationInterfaceCallbacks,
-            );
-        }
-        eprintln!("[kernel] Validation interface configured");
-
-        // Set up notification callbacks for error handling
-        eprintln!("[kernel] Setting up notification callbacks...");
-
-        unsafe extern "C" fn notify_flush_error_callback(
-            _message: *const std::os::raw::c_char,
-            _user_data: *mut std::ffi::c_void,
-        ) {
-            if !_message.is_null() {
-                if let Ok(msg) = std::ffi::CStr::from_ptr(_message).to_str() {
-                    eprintln!("[kernel/callback] ❌ FLUSH ERROR: {}", msg);
-                    eprintln!("[kernel/callback] THIS IS WHY BLOCKS ARE NOT BEING SAVED!");
-                }
-            }
-        }
-
-        let mut notification_callbacks = ffi::btck_NotificationInterfaceCallbacks {
-            notify_flush_error: Some(notify_flush_error_callback),
-            user_data: std::ptr::null_mut(),
-        };
-
-        unsafe {
-            ffi::btck_context_options_set_notifications(
-                ctx_opts,
-                &mut notification_callbacks as *mut ffi::btck_NotificationInterfaceCallbacks,
-            );
-        }
-        eprintln!("[kernel] Notification interface configured");
-
+        // Note: Validation and notification callbacks not available in current FFI bindings
         // Note: Logging requires btck_logging_connection_create() which needs
         // to be stored and managed separately. Skipping for now.
-        eprintln!("[kernel] Skipping logging connection setup");
+        eprintln!("[kernel] Skipping validation/notification/logging setup");
 
         eprintln!("[kernel] Creating context...");
         let ctx = unsafe { ffi::btck_context_create(ctx_opts) };
@@ -614,20 +552,35 @@ impl Kernel {
                 eprintln!("[kernel]    📊 File size: {} bytes ({:.2} MB)", size, size as f64 / 1024.0 / 1024.0);
 
                 // Read first 1KB to check for block magic bytes
-                if let Ok(mut file) = fs::File::open(block_file) {
-                    let mut buffer = vec![0u8; 1024];
-                    if let Ok(n) = file.read(&mut buffer) {
-                        // Signet magic: 0a 03 cf 40
-                        let magic_count = buffer.windows(4)
-                            .filter(|w| w == &[0x0a, 0x03, 0xcf, 0x40])
-                            .count();
+                match fs::File::open(block_file) {
+                    Ok(mut file) => {
+                        let mut buffer = vec![0u8; 1024];
+                        match file.read(&mut buffer) {
+                            Ok(n) => {
+                                eprintln!("[kernel]    Read {} bytes from file", n);
+                                // Signet magic: 0a 03 cf 40
+                                let magic_count = buffer[..n].windows(4)
+                                    .filter(|w| w == &[0x0a, 0x03, 0xcf, 0x40])
+                                    .count();
 
-                        if magic_count > 0 {
-                            eprintln!("[kernel]    ✅ Found {} block magic bytes in first 1KB!", magic_count);
-                        } else {
-                            eprintln!("[kernel]    ⚠️  NO BLOCK MAGIC BYTES found in first 1KB!");
-                            eprintln!("[kernel]    First 64 bytes: {:02x?}", &buffer[..64.min(n)]);
+                                if magic_count > 0 {
+                                    eprintln!("[kernel]    ✅ Found {} block magic bytes in first {} bytes!", magic_count, n);
+                                } else {
+                                    eprintln!("[kernel]    ⚠️  NO BLOCK MAGIC BYTES found in first {} bytes!", n);
+                                    if n >= 64 {
+                                        eprintln!("[kernel]    First 64 bytes: {:02x?}", &buffer[..64]);
+                                    } else {
+                                        eprintln!("[kernel]    All {} bytes: {:02x?}", n, &buffer[..n]);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[kernel]    ❌ Failed to read file: {}", e);
+                            }
                         }
+                    }
+                    Err(e) => {
+                        eprintln!("[kernel]    ❌ Failed to open file for reading: {}", e);
                     }
                 }
 
