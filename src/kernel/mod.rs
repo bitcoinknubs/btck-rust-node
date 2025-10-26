@@ -569,12 +569,11 @@ impl Kernel {
                 }
 
                 // Check if file size is increasing (not stuck at pre-allocated size)
-                use std::sync::Mutex;
-                use std::collections::HashMap;
-                static LAST_SIZES: Mutex<HashMap<i32, u64>> = Mutex::new(HashMap::new());
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static LAST_SIZE: AtomicU64 = AtomicU64::new(0);
 
-                let mut sizes = LAST_SIZES.lock().unwrap();
-                if let Some(&prev_size) = sizes.get(&(height - 1)) {
+                let prev_size = LAST_SIZE.load(Ordering::Relaxed);
+                if prev_size > 0 {
                     if size == prev_size {
                         eprintln!("[kernel]    ❌ FILE SIZE NOT CHANGING! Still {} bytes", size);
                         eprintln!("[kernel]    This means blocks are NOT being written to disk!");
@@ -583,7 +582,7 @@ impl Kernel {
                                  prev_size, size, size - prev_size);
                     }
                 }
-                sizes.insert(height, size);
+                LAST_SIZE.store(size, Ordering::Relaxed);
             }
             Err(e) => {
                 eprintln!("[kernel]    ❌ blk00000.dat DOES NOT EXIST: {}", e);
