@@ -158,6 +158,17 @@ impl Kernel {
             ffi::btck_chainstate_manager_options_update_block_tree_db_in_memory(chainman_opts, 0);
             ffi::btck_chainstate_manager_options_update_chainstate_db_in_memory(chainman_opts, 0);
             ffi::btck_chainstate_manager_options_set_worker_threads_num(chainman_opts, 2);
+
+            // CRITICAL FIX: Wipe databases on startup to prevent "already known" issues
+            // Problem: Block index contains entries but block files don't have the data
+            // This causes all blocks to be marked as "already known" and skipped
+            // Solution: Start with clean databases each time
+            eprintln!("[kernel] ⚠️  WIPING databases for clean start...");
+            ffi::btck_chainstate_manager_options_set_wipe_dbs(
+                chainman_opts,
+                1,  // wipe_block_tree_db
+                1   // wipe_chainstate_db
+            );
         }
 
         eprintln!("[kernel] Creating chainstate manager...");
