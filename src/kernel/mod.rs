@@ -91,8 +91,15 @@ impl Kernel {
 
         unsafe { ffi::btck_context_options_set_chainparams(ctx_opts, chain_params) };
 
-        // Skip logging connection for now to avoid potential issues
-        eprintln!("[kernel] Skipping logging connection setup");
+        // Enable logging to see what's happening inside libbitcoinkernel
+        eprintln!("[kernel] Enabling libbitcoinkernel logging...");
+        unsafe {
+            ffi::btck_context_options_set_log_callback(
+                ctx_opts,
+                Some(log_cb),
+                std::ptr::null_mut(),
+            );
+        }
 
         eprintln!("[kernel] Creating context...");
         let ctx = unsafe { ffi::btck_context_create(ctx_opts) };
