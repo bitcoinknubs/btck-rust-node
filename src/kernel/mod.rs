@@ -159,16 +159,10 @@ impl Kernel {
             ffi::btck_chainstate_manager_options_update_chainstate_db_in_memory(chainman_opts, 0);
             ffi::btck_chainstate_manager_options_set_worker_threads_num(chainman_opts, 2);
 
-            // CRITICAL FIX: Wipe databases on startup to prevent "already known" issues
-            // Problem: Block index contains entries but block files don't have the data
-            // This causes all blocks to be marked as "already known" and skipped
-            // Solution: Start with clean databases each time
-            eprintln!("[kernel] ⚠️  WIPING databases for clean start...");
-            ffi::btck_chainstate_manager_options_set_wipe_dbs(
-                chainman_opts,
-                1,  // wipe_block_tree_db
-                1   // wipe_chainstate_db
-            );
+            // NOTE: Do NOT wipe databases on startup
+            // Blocks are stored with XOR obfuscation (see xor.dat file)
+            // Block files appear to contain garbage but are actually encrypted
+            // libbitcoinkernel handles XOR decryption automatically
         }
 
         eprintln!("[kernel] Creating chainstate manager...");
@@ -562,26 +556,51 @@ impl Kernel {
                 eprintln!("[kernel]    ✓ blk00000.dat EXISTS");
                 eprintln!("[kernel]    📊 File size: {} bytes ({:.2} MB)", size, size as f64 / 1024.0 / 1024.0);
 
-                // Read first 1KB to check for block magic bytes
+                // Bitcoin Core uses XOR obfuscation for block files
+                // Read XOR key from xor.dat
+                let xor_key_path = std::path::Path::new("./data/blocks/xor.dat");
+                let xor_key = match fs::read(xor_key_path) {
+                    Ok(key) if !key.is_empty() => {
+                        eprintln!("[kernel]    🔐 XOR obfuscation key found: {} bytes", key.len());
+                        Some(key)
+                    }
+                    _ => {
+                        eprintln!("[kernel]    ℹ️  No XOR key (blocks stored in plaintext)");
+                        None
+                    }
+                };
+
+                // Read first 1KB to check for block magic bytes (with XOR decoding)
                 match fs::File::open(block_file) {
                     Ok(mut file) => {
                         let mut buffer = vec![0u8; 1024];
                         match file.read(&mut buffer) {
                             Ok(n) => {
                                 eprintln!("[kernel]    Read {} bytes from file", n);
+
+                                // Decode with XOR if key exists
+                                let decoded = if let Some(ref key) = xor_key {
+                                    buffer[..n].iter().enumerate()
+                                        .map(|(i, &byte)| byte ^ key[i % key.len()])
+                                        .collect::<Vec<u8>>()
+                                } else {
+                                    buffer[..n].to_vec()
+                                };
+
                                 // Signet magic: 0a 03 cf 40
-                                let magic_count = buffer[..n].windows(4)
+                                let magic_count = decoded.windows(4)
                                     .filter(|w| w == &[0x0a, 0x03, 0xcf, 0x40])
                                     .count();
 
                                 if magic_count > 0 {
-                                    eprintln!("[kernel]    ✅ Found {} block magic bytes in first {} bytes!", magic_count, n);
+                                    eprintln!("[kernel]    ✅ Found {} block magic bytes (after XOR decode)!", magic_count);
+                                    eprintln!("[kernel]    🎉 Blocks ARE being written correctly!");
                                 } else {
                                     eprintln!("[kernel]    ⚠️  NO BLOCK MAGIC BYTES found in first {} bytes!", n);
                                     if n >= 64 {
-                                        eprintln!("[kernel]    First 64 bytes: {:02x?}", &buffer[..64]);
+                                        eprintln!("[kernel]    First 64 bytes (decoded): {:02x?}", &decoded[..64]);
                                     } else {
-                                        eprintln!("[kernel]    All {} bytes: {:02x?}", n, &buffer[..n]);
+                                        eprintln!("[kernel]    All {} bytes (decoded): {:02x?}", n, &decoded[..n]);
                                     }
                                 }
                             }
@@ -595,19 +614,15 @@ impl Kernel {
                     }
                 }
 
-                // Check if file size is increasing (not stuck at pre-allocated size)
+                // Check if file size is increasing
+                // Note: File may be pre-allocated, so size might not change immediately
                 use std::sync::atomic::{AtomicU64, Ordering};
                 static LAST_SIZE: AtomicU64 = AtomicU64::new(0);
 
                 let prev_size = LAST_SIZE.load(Ordering::Relaxed);
-                if prev_size > 0 {
-                    if size == prev_size {
-                        eprintln!("[kernel]    ❌ FILE SIZE NOT CHANGING! Still {} bytes", size);
-                        eprintln!("[kernel]    This means blocks are NOT being written to disk!");
-                    } else {
-                        eprintln!("[kernel]    ✅ File growing: {} -> {} (+{} bytes)",
-                                 prev_size, size, size - prev_size);
-                    }
+                if prev_size > 0 && size != prev_size {
+                    eprintln!("[kernel]    ✅ File growing: {} -> {} (+{} bytes)",
+                             prev_size, size, size - prev_size);
                 }
                 LAST_SIZE.store(size, Ordering::Relaxed);
             }
