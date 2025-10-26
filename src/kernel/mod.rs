@@ -91,6 +91,69 @@ impl Kernel {
 
         unsafe { ffi::btck_context_options_set_chainparams(ctx_opts, chain_params) };
 
+        // CRITICAL: Set up validation callbacks to monitor block processing
+        // Without these, we may not get proper feedback on block validation
+        eprintln!("[kernel] Setting up validation interface callbacks...");
+
+        unsafe extern "C" fn block_checked_callback(
+            _block_hash: *const u8,
+            _state: *const ffi::btck_BlockValidationState,
+            _user_data: *mut std::ffi::c_void,
+        ) {
+            // This is called when a block's validation completes
+            eprintln!("[kernel/callback] ✓ Block validation completed");
+        }
+
+        unsafe extern "C" fn block_connected_callback(
+            _block_hash: *const u8,
+            _height: i32,
+            _user_data: *mut std::ffi::c_void,
+        ) {
+            eprintln!("[kernel/callback] ✓ Block CONNECTED to active chain at height {}", _height);
+        }
+
+        let mut validation_callbacks = ffi::btck_ValidationInterfaceCallbacks {
+            block_checked: Some(block_checked_callback),
+            block_connected: Some(block_connected_callback),
+            user_data: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            ffi::btck_context_options_set_validation_interface(
+                ctx_opts,
+                &mut validation_callbacks as *mut ffi::btck_ValidationInterfaceCallbacks,
+            );
+        }
+        eprintln!("[kernel] Validation interface configured");
+
+        // Set up notification callbacks for error handling
+        eprintln!("[kernel] Setting up notification callbacks...");
+
+        unsafe extern "C" fn notify_flush_error_callback(
+            _message: *const std::os::raw::c_char,
+            _user_data: *mut std::ffi::c_void,
+        ) {
+            if !_message.is_null() {
+                if let Ok(msg) = std::ffi::CStr::from_ptr(_message).to_str() {
+                    eprintln!("[kernel/callback] ❌ FLUSH ERROR: {}", msg);
+                    eprintln!("[kernel/callback] THIS IS WHY BLOCKS ARE NOT BEING SAVED!");
+                }
+            }
+        }
+
+        let mut notification_callbacks = ffi::btck_NotificationInterfaceCallbacks {
+            notify_flush_error: Some(notify_flush_error_callback),
+            user_data: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            ffi::btck_context_options_set_notifications(
+                ctx_opts,
+                &mut notification_callbacks as *mut ffi::btck_NotificationInterfaceCallbacks,
+            );
+        }
+        eprintln!("[kernel] Notification interface configured");
+
         // Note: Logging requires btck_logging_connection_create() which needs
         // to be stored and managed separately. Skipping for now.
         eprintln!("[kernel] Skipping logging connection setup");
