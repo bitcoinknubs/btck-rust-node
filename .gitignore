@@ -21,8 +21,6 @@ Cargo.lock
 /blocks/
 *.dat
 
-# Logs
-*.log
 
 # OS
 Thumbs.db
